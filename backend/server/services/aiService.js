@@ -211,6 +211,43 @@ Return ONLY the improved email body text (HTML formatted), nothing else.`;
 }
 
 /**
+ * General Chat with AI
+ */
+async function chatWithAI(prompt) {
+    try {
+        const completion = await groq.chat.completions.create({
+            messages: [
+                { 
+                    role: "system", 
+                    content: "You are a helpful AI assistant for a Personal Dashboard application. You can help with emails, tasks, and general questions. Be concise and helpful." 
+                },
+                { role: "user", content: prompt }
+            ],
+            model: "llama-3.1-8b-instant",
+            temperature: 0.7,
+            max_tokens: 1024,
+        });
+
+        return {
+            success: true,
+            response: completion.choices[0]?.message?.content || '',
+            metadata: {
+                provider: 'groq',
+                model: 'llama-3.1-8b-instant'
+            }
+        };
+
+    } catch (error) {
+        console.error('Error in AI chat:', error);
+        return {
+            success: false,
+            error: error.message,
+            response: "I'm having trouble connecting right now. Please try again later."
+        };
+    }
+}
+
+/**
  * Test connection
  */
 async function testConnection() {
@@ -237,5 +274,6 @@ module.exports = {
     generateEmailDraft,
     summarizeEmail,
     improveDraft,
+    chatWithAI,
     testConnection
 };

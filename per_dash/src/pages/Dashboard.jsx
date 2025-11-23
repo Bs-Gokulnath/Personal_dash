@@ -16,22 +16,20 @@ import {
     User,
     RefreshCw,
     Wand2,
-    Sparkles
+    Sparkles,
+    MessageSquare,
+    Mail,
+    X,
+    Send
 } from 'lucide-react';
 import { auth } from '../firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { useNavigate } from 'react-router-dom';
 import AIPromptModal from '../components/AIPromptModal';
 import DraftPreview from '../components/DraftPreview';
+import TelegramAuthModal from '../components/TelegramAuthModal';
+import PlatformSelector from '../components/PlatformSelector';
 
-
-const MOCK_MESSAGES = [
-    { id: 1, source: 'Whatsapp', sender: 'John Doe', preview: 'Hey, are we still on for lunch?', time: '10:30 AM' },
-    { id: 2, source: 'Mail', sender: 'Amazon', preview: 'Your package has been delivered', time: '9:15 AM' },
-    { id: 3, source: 'Telegram', sender: 'Crypto Group', preview: 'Bitcoin is up 5%!', time: '8:45 AM' },
-    { id: 4, source: 'Whatsapp', sender: 'Mom', preview: 'Call me when you can', time: 'Yesterday' },
-    { id: 5, source: 'Mail', sender: 'Newsletter', preview: 'Weekly tech roundup', time: 'Yesterday' },
-];
 
 const Dashboard = () => {
     const [user, setUser] = useState(null);
@@ -39,7 +37,7 @@ const Dashboard = () => {
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [isProfileOpen, setIsProfileOpen] = useState(false);
     const [activePage, setActivePage] = useState('Dashboard');
-    const [messages, setMessages] = useState(MOCK_MESSAGES);
+    const [messages, setMessages] = useState([]); // Start with empty - will be populated with real data
     const [loadingMessages, setLoadingMessages] = useState(false);
     const [errorMessages, setErrorMessages] = useState(null);
     const [selectedMessage, setSelectedMessage] = useState(null);
@@ -52,6 +50,20 @@ const Dashboard = () => {
     const [aiContext, setAIContext] = useState(null);
     const [generatedDraft, setGeneratedDraft] = useState(null);
     const [showDraftPreview, setShowDraftPreview] = useState(false);
+
+    // Telegram States
+    const [isTelegramAuthOpen, setIsTelegramAuthOpen] = useState(false);
+    const [telegramConnected, setTelegramConnected] = useState(false);
+    const [telegramChats, setTelegramChats] = useState([]);
+    const [selectedPlatform, setSelectedPlatform] = useState('all');
+    const [selectedTelegramChat, setSelectedTelegramChat] = useState(null);
+    const [replyText, setReplyText] = useState('');
+
+    // AI Chat State
+    const [isAIChatOpen, setIsAIChatOpen] = useState(false);
+    const [aiChatMessages, setAIChatMessages] = useState([{ role: 'system', content: 'Hello! I am your personal dashboard assistant. How can I help you today?' }]);
+    const [aiChatInput, setAIChatInput] = useState('');
+    const [isAiThinking, setIsAiThinking] = useState(false);
 
     const navigate = useNavigate();
 
@@ -66,8 +78,8 @@ const Dashboard = () => {
                 throw new Error('Failed to fetch emails');
             }
             const data = await response.json();
-            const otherMessages = MOCK_MESSAGES.filter(m => m.source !== 'Mail');
-            setMessages([...otherMessages, ...data]);
+            // Merge with existing messages, removing old Mail messages
+            setMessages(prev => [...prev.filter(m => m.source !== 'Mail'), ...data]);
         } catch (err) {
             console.error("Error fetching emails:", err);
             setErrorMessages("Could not load emails. Please ensure backend is running and authenticated.");
@@ -81,6 +93,18 @@ const Dashboard = () => {
             fetchEmails();
         }
     }, [activePage]);
+
+    useEffect(() => {
+        // Check Telegram connection on mount
+        checkTelegramConnection();
+    }, []);
+
+    useEffect(() => {
+        // Fetch Telegram chats when on Telegram page
+        if (activePage === 'Telegram' && telegramConnected) {
+            fetchTelegramChats();
+        }
+    }, [activePage, telegramConnected]);
 
     const sendEmail = async () => {
         if (!composeData.to || !composeData.subject) {
@@ -113,14 +137,20 @@ const Dashboard = () => {
     };
 
     const handleReply = (message) => {
-        const recipientEmail = message.sender.match(/<(.+?)>/)?.[1] || message.sender;
-        setComposeData({
-            to: recipientEmail,
-            subject: `Re: ${message.subject}`,
-            body: `\n\n---\nOn ${message.time}, ${message.sender} wrote:\n${message.preview}`
-        });
-        setIsComposeOpen(true);
-        setSelectedMessage(null);
+        if (message.source === 'Telegram') {
+            setSelectedTelegramChat(message);
+            // Don't close the modal, just show reply input
+        } else {
+            // Default to Mail behavior
+            const recipientEmail = message.sender.match(/<(.+?)>/)?.[1] || message.sender;
+            setComposeData({
+                to: recipientEmail,
+                subject: `Re: ${message.subject}`,
+                body: `\n\n---\nOn ${message.time}, ${message.sender} wrote:\n${message.preview}`
+            });
+            setIsComposeOpen(true);
+            setSelectedMessage(null);
+        }
     };
 
     // AI Assistant Functions
@@ -225,7 +255,116 @@ const Dashboard = () => {
         }
     };
 
+    const handleSendAIChat = async () => {
+        if (!aiChatInput.trim()) return;
 
+        const userMessage = { role: 'user', content: aiChatInput };
+        setAIChatMessages(prev => [...prev, userMessage]);
+        setAIChatInput('');
+        setIsAiThinking(true);
+
+        try {
+            const response = await fetch('http://localhost:5000/api/ai/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: userMessage.content }),
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                setAIChatMessages(prev => [...prev, { role: 'assistant', content: data.response }]);
+            } else {
+                setAIChatMessages(prev => [...prev, { role: 'assistant', content: "I'm sorry, I encountered an error. Please try again." }]);
+            }
+        } catch (error) {
+            console.error('AI Chat Error:', error);
+            setAIChatMessages(prev => [...prev, { role: 'assistant', content: "I'm having trouble connecting to the server." }]);
+        } finally {
+            setIsAiThinking(false);
+        }
+    };
+
+    const handleSendTelegramReply = async () => {
+        if (!replyText.trim() || !selectedTelegramChat) return;
+
+        try {
+            const response = await fetch('http://localhost:5000/api/telegram/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chatId: selectedTelegramChat.chatId, // We need to ensure chatId is preserved
+                    text: replyText
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to send message');
+            }
+
+            setReplyText('');
+            setSelectedTelegramChat(null);
+            alert('Reply sent!');
+            fetchTelegramChats(); // Refresh to show new message
+        } catch (error) {
+            console.error('Error sending Telegram reply:', error);
+            alert('Failed to send reply');
+        }
+    };
+
+    // Telegram Functions
+    const checkTelegramConnection = async () => {
+        try {
+            const response = await fetch('http://localhost:5000/api/telegram/status');
+            const data = await response.json();
+            setTelegramConnected(data.connected);
+            if (data.connected) {
+                fetchTelegramChats();
+            }
+        } catch (error) {
+            console.error('Error checking Telegram status:', error);
+        }
+    };
+
+    const fetchTelegramChats = async () => {
+        try {
+            const response = await fetch('http://localhost:5000/api/telegram/chats');
+            if (response.ok) {
+                const data = await response.json();
+                setTelegramChats(data.chats || []);
+
+                // Convert Telegram chats to message format and add to messages
+                const telegramMessages = (data.chats || []).map(chat => ({
+                    id: `telegram_${chat.id}`,
+                    chatId: chat.id,
+                    source: 'Telegram',
+                    sender: chat.title,
+                    preview: chat.message?.text || 'No messages yet',
+                    time: chat.message?.date ? new Date(chat.message.date * 1000).toLocaleTimeString('en-US', {
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true
+                    }) : '',
+                    subject: '',
+                    body: chat.message?.text || '',
+                    unreadCount: chat.unreadCount
+                }));
+
+                // Merge with existing messages, removing old Telegram messages first
+                setMessages(prev => [
+                    ...prev.filter(m => m.source !== 'Telegram'),
+                    ...telegramMessages
+                ]);
+            }
+        } catch (error) {
+            console.error('Error fetching Telegram chats:', error);
+        }
+    };
+
+    const handleTelegramAuthSuccess = () => {
+        setTelegramConnected(true);
+        fetchTelegramChats();
+    };
 
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -238,6 +377,19 @@ const Dashboard = () => {
 
         return () => unsubscribe();
     }, [navigate]);
+
+    useEffect(() => {
+        if (user) {
+            fetchEmails();
+            checkTelegramConnection();
+        }
+    }, [user]);
+
+    useEffect(() => {
+        if (telegramConnected) {
+            fetchTelegramChats();
+        }
+    }, [telegramConnected]);
 
     const handleSignOut = async () => {
         try {
@@ -263,6 +415,7 @@ const Dashboard = () => {
 
     return (
         <div className="flex h-screen bg-gray-100 font-sans text-gray-900">
+
             {/* Mobile Overlay */}
             {isSidebarOpen && (
                 <div
@@ -501,41 +654,63 @@ const Dashboard = () => {
                             <div className="flex items-center justify-between">
                                 <h1 className="text-2xl font-bold text-gray-800">{activePage === 'Inbox' ? 'All Messages' : `${activePage} Messages`}</h1>
                                 <div className="flex items-center space-x-4">
-                                    <button
-                                        onClick={() => {
-                                            setComposeData({ to: '', subject: '', body: '' });
-                                            setIsComposeOpen(true);
-                                        }}
-                                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
-                                        title="Compose Email"
-                                    >
-                                        Compose
-                                    </button>
-                                    <button
-                                        onClick={() => handleAIAssistant(null)}
-                                        className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg hover:from-purple-700 hover:to-pink-700 transition-all shadow-lg text-sm font-medium flex items-center space-x-2"
-                                        title="AI Email Assistant"
-                                    >
-                                        <Wand2 size={16} />
-                                        <span>AI Assistant</span>
-                                    </button>
-                                    <button
-                                        onClick={fetchEmails}
-                                        className="p-2 text-gray-500 hover:text-blue-600 transition-colors rounded-full hover:bg-blue-50"
-                                        title="Refresh Emails"
-                                    >
-                                        <RefreshCw size={20} className={loadingMessages ? 'animate-spin' : ''} />
-                                    </button>
-                                    <span className="text-sm text-gray-500">
-                                        {loadingMessages ? 'Loading...' : `${messages.filter(m => activePage === 'Inbox' || m.source === activePage).length} messages`}
-                                    </span>
+                                    {activePage === 'Telegram' && !telegramConnected && (
+                                        <button
+                                            onClick={() => setIsTelegramAuthOpen(true)}
+                                            className="px-4 py-2 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-lg hover:from-blue-700 hover:to-cyan-700 transition-all text-sm font-medium flex items-center space-x-2 shadow-md"
+                                        >
+                                            <MessageSquare size={16} />
+                                            <span>Connect Telegram</span>
+                                        </button>
+                                    )}
+
+                                    {/* Refresh button for Telegram */}
+                                    {activePage === 'Telegram' && telegramConnected && (
+                                        <button
+                                            onClick={fetchTelegramChats}
+                                            className="p-2 text-gray-500 hover:text-blue-600 transition-colors rounded-full hover:bg-blue-50"
+                                            title="Refresh Telegram Chats"
+                                        >
+                                            <RefreshCw size={20} />
+                                        </button>
+                                    )}
+
+                                    {/* Compose button only for Mail and Inbox */}
+                                    {(activePage === 'Mail' || activePage === 'Inbox') && (
+                                        <button
+                                            onClick={() => {
+                                                setComposeData({ to: '', subject: '', body: '' });
+                                                setIsComposeOpen(true);
+                                            }}
+                                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                                            title="Compose Email"
+                                        >
+                                            Compose
+                                        </button>
+                                    )}
+
+                                    {/* Refresh button for Mail */}
+                                    {(activePage === 'Mail' || activePage === 'Inbox') && (
+                                        <>
+                                            <button
+                                                onClick={fetchEmails}
+                                                className="p-2 text-gray-500 hover:text-blue-600 transition-colors rounded-full hover:bg-blue-50"
+                                                title="Refresh Emails"
+                                            >
+                                                <RefreshCw size={20} className={loadingMessages ? 'animate-spin' : ''} />
+                                            </button>
+                                            <span className="text-sm text-gray-500">
+                                                {loadingMessages ? 'Loading...' : `${messages.filter(m => activePage === 'Inbox' || m.source === activePage).length} messages`}
+                                            </span>
+                                        </>
+                                    )}
                                 </div>
                             </div>
 
                             <div className="rounded-xl bg-white shadow-sm overflow-hidden">
                                 {loadingMessages ? (
                                     <div className="p-8 text-center text-gray-500">Loading messages...</div>
-                                ) : errorMessages ? (
+                                ) : (errorMessages && (activePage === 'Mail' || activePage === 'Inbox')) ? (
                                     <div className="p-8 text-center text-red-500">{errorMessages}</div>
                                 ) : (
                                     <>
@@ -566,8 +741,23 @@ const Dashboard = () => {
                                                 </div>
                                             ))}
                                         {messages.filter(m => activePage === 'Inbox' || m.source === activePage).length === 0 && (
-                                            <div className="p-8 text-center text-gray-500">
-                                                No messages found.
+                                            <div className="p-12 text-center">
+                                                <div className="mx-auto w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-4">
+                                                    {activePage === 'Whatsapp' && <MessageSquare className="text-gray-400" size={32} />}
+                                                    {activePage === 'Mail' && <Mail className="text-gray-400" size={32} />}
+                                                    {activePage === 'Telegram' && <MessageSquare className="text-gray-400" size={32} />}
+                                                    {activePage === 'Inbox' && <Inbox className="text-gray-400" size={32} />}
+                                                </div>
+                                                <h3 className="text-lg font-semibold text-gray-700 mb-2">
+                                                    {activePage === 'Inbox' ? 'No Messages' : `${activePage} Not Connected`}
+                                                </h3>
+                                                <p className="text-sm text-gray-500">
+                                                    {activePage === 'Whatsapp' && 'Connect your WhatsApp account to view messages'}
+                                                    {activePage === 'Mail' && 'Connect your email account to view messages'}
+                                                    {activePage === 'Telegram' && !telegramConnected && 'Click "Connect Telegram" to view messages'}
+                                                    {activePage === 'Telegram' && telegramConnected && 'Loading your Telegram chats...'}
+                                                    {activePage === 'Inbox' && 'No messages from any platform yet'}
+                                                </p>
                                             </div>
                                         )}
                                     </>
@@ -622,17 +812,51 @@ const Dashboard = () => {
                                     ) : (
                                         <p className="text-gray-700 whitespace-pre-wrap">{selectedMessage.preview}</p>
                                     )}
+
+                                    {/* Telegram Reply Input */}
+                                    {selectedTelegramChat && selectedTelegramChat.id === selectedMessage.id && (
+                                        <div className="mt-6 border-t pt-4">
+                                            <h5 className="text-sm font-medium text-gray-700 mb-2">Reply to {selectedMessage.sender}</h5>
+                                            <textarea
+                                                value={replyText}
+                                                onChange={(e) => setReplyText(e.target.value)}
+                                                placeholder="Type your reply..."
+                                                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                                                rows="3"
+                                                autoFocus
+                                            />
+                                            <div className="flex justify-end mt-3 space-x-2">
+                                                <button
+                                                    onClick={() => {
+                                                        setSelectedTelegramChat(null);
+                                                        setReplyText('');
+                                                    }}
+                                                    className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors"
+                                                >
+                                                    Cancel
+                                                </button>
+                                                <button
+                                                    onClick={handleSendTelegramReply}
+                                                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors flex items-center space-x-1"
+                                                >
+                                                    <span>Send Reply</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
-                                {/* Modal Footer */}
-                                <div className="border-t border-gray-100 p-4 bg-gray-50 flex justify-end space-x-2">
-                                    <button onClick={() => setSelectedMessage(null)} className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800">
-                                        Close
-                                    </button>
-                                    <button onClick={() => handleReply(selectedMessage)} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700">
-                                        Reply
-                                    </button>
-                                </div>
+                                {/* Modal Footer - Hide if replying via Telegram */}
+                                {(!selectedTelegramChat || selectedTelegramChat.id !== selectedMessage.id) && (
+                                    <div className="border-t border-gray-100 p-4 bg-gray-50 flex justify-end space-x-2">
+                                        <button onClick={() => setSelectedMessage(null)} className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800">
+                                            Close
+                                        </button>
+                                        <button onClick={() => handleReply(selectedMessage)} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700">
+                                            Reply
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )
@@ -708,7 +932,7 @@ const Dashboard = () => {
             </div >
 
             {/* AI Prompt Modal */}
-            <AIPromptModal
+            < AIPromptModal
                 isOpen={isAIPromptOpen}
                 onClose={() => {
                     setIsAIPromptOpen(false);
@@ -719,17 +943,89 @@ const Dashboard = () => {
             />
 
             {/* Draft Preview Modal */}
-            {showDraftPreview && generatedDraft && (
-                <DraftPreview
-                    draft={generatedDraft}
-                    onClose={() => {
-                        setShowDraftPreview(false);
-                        setGeneratedDraft(null);
-                    }}
-                    onSend={handleSendAIDraft}
-                    onImprove={handleImproveDraft}
-                />
-            )}
+            {
+                showDraftPreview && generatedDraft && (
+                    <DraftPreview
+                        draft={generatedDraft}
+                        onClose={() => {
+                            setShowDraftPreview(false);
+                            setGeneratedDraft(null);
+                        }}
+                        onSend={handleSendAIDraft}
+                        onImprove={handleImproveDraft}
+                    />
+                )
+            }
+            {/* Telegram Auth Modal */}
+            <TelegramAuthModal
+                isOpen={isTelegramAuthOpen}
+                onClose={() => setIsTelegramAuthOpen(false)}
+                onSuccess={handleTelegramAuthSuccess}
+            />
+
+            {/* AI Chat FAB */}
+            <button
+                onClick={() => setIsAIChatOpen(!isAIChatOpen)}
+                className="fixed bottom-6 right-6 p-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-full shadow-2xl hover:scale-105 transition-transform z-50"
+            >
+                {isAIChatOpen ? <X size={24} /> : <Wand2 size={24} />}
+            </button>
+
+            {/* AI Chat Window */}
+            {
+                isAIChatOpen && (
+                    <div className="fixed bottom-24 right-6 w-96 h-[500px] bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden z-50 border border-gray-100">
+                        <div className="p-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white flex justify-between items-center">
+                            <h3 className="font-bold flex items-center gap-2"><Wand2 size={18} /> AI Assistant</h3>
+                            <button onClick={() => setIsAIChatOpen(false)} className="hover:bg-white/20 p-1 rounded"><X size={18} /></button>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
+                            {aiChatMessages.map((msg, idx) => (
+                                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                    <div className={`max-w-[80%] p-3 rounded-xl text-sm ${msg.role === 'user'
+                                        ? 'bg-purple-600 text-white rounded-br-none'
+                                        : 'bg-white text-gray-800 shadow-sm rounded-bl-none border border-gray-100'
+                                        }`}>
+                                        {msg.content}
+                                    </div>
+                                </div>
+                            ))}
+                            {isAiThinking && (
+                                <div className="flex justify-start">
+                                    <div className="bg-white p-3 rounded-xl rounded-bl-none shadow-sm border border-gray-100">
+                                        <div className="flex space-x-1">
+                                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="p-3 bg-white border-t border-gray-100">
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="text"
+                                    value={aiChatInput}
+                                    onChange={(e) => setAIChatInput(e.target.value)}
+                                    onKeyPress={(e) => e.key === 'Enter' && handleSendAIChat()}
+                                    placeholder="Ask me anything..."
+                                    className="flex-1 p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                                />
+                                <button
+                                    onClick={handleSendAIChat}
+                                    disabled={!aiChatInput.trim() || isAiThinking}
+                                    className="p-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors"
+                                >
+                                    <Send size={18} />
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
         </div >
     );
 };

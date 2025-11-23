@@ -5,9 +5,11 @@ const express = require('express');
 const cors = require('cors');
 const { google } = require('googleapis');
 const { getAuthUrl, getAndSaveToken, getGmailClient, oauth2Client } = require('./gmailService');
-const { generateEmailDraft, summarizeEmail, improveDraft, testConnection } = require('./services/aiService');
+const { generateEmailDraft, summarizeEmail, improveDraft, chatWithAI, testConnection } = require('./services/aiService');
+const telegramService = require('./services/telegramService');
 const EmailDraft = require('./models/EmailDraft');
 const AIInteraction = require('./models/AIInteraction');
+const TelegramSession = require('./models/TelegramSession');
 const { connectDB, isDBConnected } = require('./config/database');
 
 // Connect to MongoDB (will warn if not configured)
@@ -325,6 +327,41 @@ app.post('/api/ai/summarize-email', async (req, res) => {
     }
 });
 
+// General AI Chat
+app.post('/api/ai/chat', async (req, res) => {
+    const { prompt } = req.body;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    if (!prompt) {
+        return res.status(400).json({ error: "prompt is required" });
+    }
+
+    try {
+        const result = await chatWithAI(prompt);
+
+        if (!result.success) {
+            return res.status(500).json({ error: result.error });
+        }
+
+        // Log interaction
+        if (isDBConnected()) {
+            await AIInteraction.create({
+                userId,
+                action: 'chat',
+                input: prompt,
+                output: result.response,
+                success: true
+            });
+        }
+
+        res.json(result);
+
+    } catch (error) {
+        console.error("Error in AI chat:", error);
+        res.status(500).json({ error: "Failed to process chat" });
+    }
+});
+
 // 8. Improve Email Draft
 app.post('/api/ai/improve-draft', async (req, res) => {
     const { draftId, currentDraft, instruction } = req.body;
@@ -499,6 +536,233 @@ app.delete('/api/drafts/:draftId', async (req, res) => {
     } catch (error) {
         console.error("Error deleting draft:", error);
         res.status(500).json({ error: "Failed to delete draft", details: error.message });
+    }
+});
+
+// Store auth promises for code input
+const authPromises = new Map();
+
+// 12. Start Telegram Authentication
+app.post('/api/telegram/auth/start', async (req, res) => {
+    const { phoneNumber } = req.body;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    if (!phoneNumber) {
+        return res.status(400).json({ error: "Phone number is required" });
+    }
+
+    try {
+        console.log(`📱 Starting Telegram auth for ${phoneNumber}`);
+
+        // Create promise for phone code that will be resolved when user submits it
+        let resolveCode, resolvePassword;
+        const codePromise = new Promise(resolve => { resolveCode = resolve; });
+        const passwordPromise = new Promise(resolve => { resolvePassword = resolve; });
+
+        // Store resolvers for later use
+        authPromises.set(phoneNumber, { 
+            resolveCode, 
+            resolvePassword,
+            userId 
+        });
+
+        // Start authentication (this will trigger code send)
+        telegramService.authenticate(
+            userId,
+            phoneNumber,
+            () => codePromise,
+            () => passwordPromise
+        ).then(result => {
+            if (result.success) {
+                console.log(`✅ Telegram auth successful for ${phoneNumber}`);
+                // Save to database
+                TelegramSession.findOneAndUpdate(
+                    { userId },
+                    {
+                        userId,
+                        phoneNumber,
+                        sessionString: result.sessionString,
+                        isActive: true,
+                        lastSync: new Date()
+                    },
+                    { upsert: true, new: true }
+                ).catch(err => console.error('Error saving session:', err));
+            }
+            authPromises.delete(phoneNumber);
+        }).catch(err => {
+            console.error('Telegram auth error:', err);
+            authPromises.delete(phoneNumber);
+        });
+
+        // Wait a bit for the code to be sent
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        res.json({
+            success: true,
+            message: "Verification code sent to your Telegram app",
+            step: "code_required"
+        });
+
+    } catch (error) {
+        console.error("Error starting Telegram auth:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 13. Complete Telegram Authentication with Code
+app.post('/api/telegram/auth/verify', async (req, res) => {
+    const { phoneNumber, code, password } = req.body;
+
+    if (!phoneNumber || !code) {
+        return res.status(400).json({ error: "Phone number and code are required" });
+    }
+
+    try {
+        // Get the auth promise resolvers
+        const authData = authPromises.get(phoneNumber);
+        if (!authData) {
+            return res.status(400).json({ error: "No pending authentication found. Please start authentication again." });
+        }
+
+        // Resolve the code promise
+        authData.resolveCode(code);
+
+        // If password provided, resolve password promise
+        if (password) {
+            authData.resolvePassword(password);
+        }
+
+        // The authentication will complete in the background
+        // Give it a moment then respond
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        // Check if session was saved
+        const session = await TelegramSession.findOne({ userId: authData.userId, isActive: true });
+        
+        if (session) {
+            res.json({
+                success: true,
+                message: "Telegram connected successfully!",
+                phoneNumber
+            });
+        } else {
+            // If 2FA is required, the password promise is still pending
+            res.json({
+                success: false,
+                error: "Two-factor authentication required",
+                requires2FA: true
+            });
+        }
+
+    } catch (error) {
+        console.error("Error verifying Telegram code:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 14. Get Telegram Chats
+app.get('/api/telegram/chats', async (req, res) => {
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    try {
+        // Check if user has active session
+        const session = await TelegramSession.findOne({ userId, isActive: true });
+        
+        if (!session) {
+            return res.status(401).json({ error: "Not authenticated with Telegram" });
+        }
+
+        console.log(`📱 Fetching Telegram chats for user: ${userId}`);
+        
+        // Get decrypted session string
+        const sessionObj = session.toObject();
+        const decryptedSession = sessionObj.sessionString;
+        
+        console.log(`🔑 Session string length: ${decryptedSession?.length || 0}`);
+        console.log(`🔑 Session preview: ${decryptedSession?.substring(0, 20)}...`);
+
+        // Initialize client with saved session
+        const client = await telegramService.getClient(userId, decryptedSession);
+        
+        // Connect if not connected
+        if (!client.connected) {
+            await client.connect();
+            console.log('✅ Telegram client connected');
+        }
+
+        // Get dialogs
+        const chats = await telegramService.getDialogs(userId, 50);
+        
+        console.log(`✅ Fetched ${chats.length} Telegram chats`);
+
+        res.json({ chats });
+
+    } catch (error) {
+        console.error("Error fetching Telegram chats:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 15. Get Messages from a Chat
+app.get('/api/telegram/messages/:chatId', async (req, res) => {
+    const { chatId } = req.params;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+    const limit = parseInt(req.query.limit) || 50;
+
+    try {
+        const messages = await telegramService.getMessages(userId, chatId, limit);
+        res.json({ messages });
+
+    } catch (error) {
+        console.error("Error fetching Telegram messages:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 16. Send Telegram Message
+app.post('/api/telegram/send', async (req, res) => {
+    const { chatId, text } = req.body;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    if (!chatId || !text) {
+        return res.status(400).json({ error: "chatId and text are required" });
+    }
+
+    try {
+        const result = await telegramService.sendMessage(userId, chatId, text);
+
+        if (!result.success) {
+            return res.status(400).json({ error: result.error });
+        }
+
+        res.json({
+            success: true,
+            messageId: result.messageId,
+            date: result.date
+        });
+
+    } catch (error) {
+        console.error("Error sending Telegram message:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 17. Check Telegram Connection Status
+app.get('/api/telegram/status', async (req, res) => {
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    try {
+        const session = await TelegramSession.findOne({ userId, isActive: true });
+        
+        res.json({
+            connected: !!session,
+            phoneNumber: session ? session.phoneNumber : null,
+            lastSync: session ? session.lastSync : null
+        });
+
+    } catch (error) {
+        console.error("Error checking Telegram status:", error);
+        res.status(500).json({ error: error.message });
     }
 });
 
