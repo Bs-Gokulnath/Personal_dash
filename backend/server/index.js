@@ -66,6 +66,7 @@ app.get('/api/emails', async (req, res) => {
     const response = await gmail.users.messages.list({
       userId: 'me',
       maxResults: 50,
+      q: 'category:primary'
     });
 
     const messages = response.data.messages || [];

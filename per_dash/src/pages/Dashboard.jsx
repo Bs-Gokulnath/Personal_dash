@@ -18,10 +18,16 @@ import {
     Wand2,
     Sparkles,
     MessageSquare,
+    Send,
     Mail,
     X,
-    Send
+    FileText,
+    ArrowRightLeft,
+    Package,
+    PieChart as PieChartIcon,
+    BarChart as BarChartIcon
 } from 'lucide-react';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { auth } from '../firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { useNavigate } from 'react-router-dom';
@@ -33,10 +39,10 @@ import PlatformSelector from '../components/PlatformSelector';
 
 const Dashboard = () => {
     const [user, setUser] = useState(null);
-    const [isInboxOpen, setIsInboxOpen] = useState(false);
+    const [isInboxOpen, setIsInboxOpen] = useState(true);
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [isProfileOpen, setIsProfileOpen] = useState(false);
-    const [activePage, setActivePage] = useState('Dashboard');
+    const [activePage, setActivePage] = useState('Inbox');
     const [messages, setMessages] = useState([]); // Start with empty - will be populated with real data
     const [loadingMessages, setLoadingMessages] = useState(false);
     const [errorMessages, setErrorMessages] = useState(null);
@@ -44,6 +50,84 @@ const Dashboard = () => {
     const [isComposeOpen, setIsComposeOpen] = useState(false);
     const [composeData, setComposeData] = useState({ to: '', subject: '', body: '' });
     const [sendingEmail, setSendingEmail] = useState(false);
+
+    // Draft States
+    const [drafts, setDrafts] = useState({});
+    const [loadingDrafts, setLoadingDrafts] = useState({});
+
+    const handleQuickDraft = async (message) => {
+        setLoadingDrafts(prev => ({ ...prev, [message.id]: true }));
+        try {
+            const response = await fetch('http://localhost:5000/api/ai/generate-draft', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt: "Draft a helpful reply to this message.",
+                    emailContext: {
+                        originalEmail: {
+                            id: message.id,
+                            sender: message.sender,
+                            subject: message.subject,
+                            body: message.body || message.preview
+                        },
+                        additionalContext: "The product cost is $34."
+                    },
+                    tone: 'professional'
+                })
+            });
+            const data = await response.json();
+            if (data.success) {
+                // Extract body and strip HTML for quick view
+                const bodyHtml = data.draft.body || '';
+                const tempDiv = document.createElement("div");
+                tempDiv.innerHTML = bodyHtml;
+                const bodyText = tempDiv.textContent || tempDiv.innerText || "";
+                setDrafts(prev => ({ ...prev, [message.id]: bodyText }));
+            }
+        } catch (error) {
+            console.error("Draft generation failed", error);
+        } finally {
+            setLoadingDrafts(prev => ({ ...prev, [message.id]: false }));
+        }
+    };
+
+    const [reviewDraft, setReviewDraft] = useState(null);
+
+    const handleOpenReview = (message) => {
+        const recipientEmail = message.sender.match(/<(.+?)>/)?.[1] || message.sender;
+        const draftBody = drafts[message.id];
+
+        if (!draftBody) return;
+
+        setReviewDraft({
+            to: recipientEmail,
+            subject: `Re: ${message.subject}`,
+            body: draftBody,
+            messageId: message.id
+        });
+    };
+
+    const handleSendReviewedDraft = async (draft) => {
+        const response = await fetch('http://localhost:5000/api/send-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                to: draft.to,
+                subject: draft.subject,
+                body: draft.body
+            }),
+        });
+
+        if (!response.ok) throw new Error('Failed to send email');
+
+        alert('Reply sent successfully!');
+        setDrafts(prev => {
+            const newDrafts = { ...prev };
+            if (reviewDraft?.messageId) delete newDrafts[reviewDraft.messageId];
+            return newDrafts;
+        });
+        setReviewDraft(null);
+    };
 
     // AI Assistant States
     const [isAIPromptOpen, setIsAIPromptOpen] = useState(false);
@@ -411,7 +495,22 @@ const Dashboard = () => {
         }
     };
 
-    if (!user) return <div className="flex h-screen items-center justify-center">Loading...</div>;
+    // Chart Data
+    const pieData = [
+        { name: 'Mail', value: messages.filter(m => m.source === 'Mail').length, color: '#3b82f6' },
+        { name: 'Telegram', value: messages.filter(m => m.source === 'Telegram').length, color: '#8b5cf6' },
+        { name: 'Whatsapp', value: messages.filter(m => m.source === 'Whatsapp').length, color: '#22c55e' },
+    ].filter(d => d.value > 0);
+
+    const barData = [
+        { name: 'Mon', count: 12 },
+        { name: 'Tue', count: 19 },
+        { name: 'Wed', count: 3 },
+        { name: 'Thu', count: 5 },
+        { name: 'Fri', count: 2 },
+    ];
+
+    if (!user) return <div className="flex h-screen items-center justify-center bg-gray-50 text-gray-600">Loading...</div>;
 
     return (
         <div className="flex h-screen bg-gray-100 font-sans text-gray-900">
@@ -717,29 +816,82 @@ const Dashboard = () => {
                                         {messages
                                             .filter(m => activePage === 'Inbox' || m.source === activePage)
                                             .map((message) => (
-                                                <div
-                                                    key={message.id}
-                                                    onClick={() => setSelectedMessage(message)}
-                                                    className="flex items-center justify-between border-b border-gray-100 p-4 hover:bg-gray-50 transition-colors last:border-0 cursor-pointer"
-                                                >
-                                                    <div className="flex items-center space-x-4">
-                                                        <div className={`flex h-10 w-10 items-center justify-center rounded-full text-white font-bold
-                                                ${message.source === 'Whatsapp' ? 'bg-green-500' :
-                                                                message.source === 'Telegram' ? 'bg-blue-400' : 'bg-red-500'}`}>
-                                                            {message.source[0]}
-                                                        </div>
-                                                        <div>
-                                                            <div className="flex items-center space-x-2">
-                                                                <h4 className="font-semibold text-gray-900">{message.sender}</h4>
-                                                                <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">{message.source}</span>
+                                                <div key={message.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                                                    <div className="flex flex-col md:flex-row">
+                                                        {/* Left: Message Content */}
+                                                        <div
+                                                            className="flex-1 p-4 cursor-pointer border-r border-gray-100"
+                                                            onClick={() => {
+                                                                setSelectedMessage(message);
+                                                                if (message.source === 'Telegram') setSelectedTelegramChat(message);
+                                                            }}
+                                                        >
+                                                            <div className="flex items-center space-x-4">
+                                                                <div className={`flex h-10 w-10 items-center justify-center rounded-full text-white font-bold flex-shrink-0
+                                                                    ${message.source === 'Whatsapp' ? 'bg-green-500' :
+                                                                        message.source === 'Telegram' ? 'bg-blue-400' : 'bg-red-500'}`}>
+                                                                    {message.source[0]}
+                                                                </div>
+                                                                <div className="min-w-0 flex-1">
+                                                                    <div className="flex items-center justify-between mb-1">
+                                                                        <h4 className="font-semibold text-gray-900 truncate">{message.sender}</h4>
+                                                                        <span className="text-xs text-gray-400 whitespace-nowrap ml-2">{message.time}</span>
+                                                                    </div>
+                                                                    <p className="text-sm text-gray-600 line-clamp-1 font-medium">{message.subject || message.preview}</p>
+                                                                    <p className="text-xs text-gray-400 line-clamp-2">{message.preview}</p>
+                                                                </div>
                                                             </div>
-                                                            <p className="text-sm text-gray-600 line-clamp-1">{message.subject || message.preview}</p>
-                                                            <p className="text-xs text-gray-400 line-clamp-1">{message.preview}</p>
+                                                        </div>
+
+                                                        {/* Right: AI Draft */}
+                                                        <div className="w-full md:w-1/2 p-4 bg-gray-50/50">
+                                                            <div className="bg-white rounded-lg border border-gray-200 p-3 h-full flex flex-col shadow-sm min-h-[120px]">
+                                                                <div className="flex justify-between items-center mb-2">
+                                                                    <span className="text-xs font-bold text-purple-600 flex items-center gap-1">
+                                                                        <Sparkles size={12} /> AI Draft
+                                                                    </span>
+                                                                    <div className="flex gap-2">
+                                                                        {drafts[message.id] && (
+                                                                            <button
+                                                                                onClick={(e) => {
+                                                                                    e.stopPropagation();
+                                                                                    handleOpenReview(message);
+                                                                                }}
+                                                                                className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 transition-colors flex items-center gap-1"
+                                                                            >
+                                                                                <FileText size={12} /> Review
+                                                                            </button>
+                                                                        )}
+                                                                        <button
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                handleQuickDraft(message);
+                                                                            }}
+                                                                            disabled={loadingDrafts[message.id]}
+                                                                            className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded hover:bg-purple-200 disabled:opacity-50 transition-colors"
+                                                                        >
+                                                                            {loadingDrafts[message.id] ? 'Generating...' : drafts[message.id] ? 'Regenerate' : 'Generate'}
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+
+                                                                {drafts[message.id] ? (
+                                                                    <textarea
+                                                                        className="flex-1 w-full text-sm text-gray-600 resize-none border-none focus:ring-0 bg-transparent p-0"
+                                                                        value={drafts[message.id]}
+                                                                        onChange={(e) => setDrafts(prev => ({ ...prev, [message.id]: e.target.value }))}
+                                                                    />
+                                                                ) : (
+                                                                    <div className="flex-1 flex items-center justify-center text-gray-400 text-xs italic p-4 text-center">
+                                                                        Click Generate to create a draft response based on this message.
+                                                                    </div>
+                                                                )}
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                    <span className="text-xs text-gray-400 whitespace-nowrap ml-2">{message.time}</span>
                                                 </div>
                                             ))}
+
                                         {messages.filter(m => activePage === 'Inbox' || m.source === activePage).length === 0 && (
                                             <div className="p-12 text-center">
                                                 <div className="mx-auto w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-4">
@@ -762,6 +914,7 @@ const Dashboard = () => {
                                         )}
                                     </>
                                 )}
+
                             </div>
                         </div>
                     ) : (
@@ -772,7 +925,8 @@ const Dashboard = () => {
                             </div>
                             <p className="mt-4 text-gray-500">We are working hard to bring you this feature.</p>
                         </div>
-                    )}
+                    )
+                    }
                 </main >
 
                 {/* Message Detail Modal */}
@@ -1026,6 +1180,14 @@ const Dashboard = () => {
                     </div>
                 )
             }
+            {reviewDraft && (
+                <DraftPreview
+                    draft={reviewDraft}
+                    onClose={() => setReviewDraft(null)}
+                    onSend={handleSendReviewedDraft}
+                    onImprove={handleImproveDraft}
+                />
+            )}
         </div >
     );
 };
@@ -1034,22 +1196,22 @@ const Dashboard = () => {
 const NavItem = ({ icon, label, active, isOpen, onClick }) => (
     <button
         onClick={onClick}
-        className={`flex w-full items-center rounded-lg px-4 py-3 transition-colors ${active
-            ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
-            : 'text-gray-300 hover:bg-indigo-900 hover:text-white'
+        className={`flex w-full items-center rounded-lg px-4 py-3 transition-all duration-200 group ${active
+            ? 'bg-blue-50 text-blue-600'
+            : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
             } ${!isOpen && 'justify-center'}`}
     >
-        <div className={`${active ? 'text-white' : 'text-gray-400 group-hover:text-white'}`}>
+        <div className={`${active ? 'text-blue-600' : 'text-gray-400 group-hover:text-gray-600'}`}>
             {icon}
         </div>
-        {isOpen && <span className="ml-3 font-medium">{label}</span>}
+        {isOpen && <span className="ml-3 font-medium text-sm">{label}</span>}
     </button>
 );
 
 const SubNavItem = ({ label, onClick }) => (
     <button
         onClick={onClick}
-        className="block w-full rounded-md px-4 py-2 text-left text-sm text-gray-400 transition-colors hover:bg-indigo-900 hover:text-white"
+        className="block w-full rounded-md px-4 py-2 text-left text-sm text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600"
     >
         {label}
     </button>
@@ -1058,21 +1220,24 @@ const SubNavItem = ({ label, onClick }) => (
 const DropdownItem = ({ icon, label, onClick }) => (
     <button
         onClick={onClick}
-        className="flex w-full items-center rounded-md px-4 py-2 text-sm text-gray-300 hover:bg-indigo-800 hover:text-white transition-colors"
+        className="flex w-full items-center rounded-md px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
     >
-        <span className="mr-3">{icon}</span>
+        <span className="mr-3 text-gray-400">{icon}</span>
         {label}
     </button>
 );
 
-const StatCard = ({ title, value, change, isPositive }) => (
-    <div className="rounded-xl bg-white p-6 shadow-sm transition-shadow hover:shadow-md">
-        <p className="text-sm font-medium text-gray-500">{title}</p>
-        <div className="mt-2 flex items-end justify-between">
-            <h4 className="text-2xl font-bold text-gray-800">{value}</h4>
-            <span className={`flex items-center text-sm font-medium ${isPositive ? 'text-green-500' : 'text-red-500'}`}>
-                {change}
-            </span>
+const StatCard = ({ title, value, icon, change }) => (
+    <div className="rounded-xl bg-white p-6 shadow-sm border border-gray-100 flex flex-col justify-between h-32 hover:shadow-md transition-shadow">
+        <div className="flex justify-between items-start">
+            <p className="text-sm font-medium text-gray-500">{title}</p>
+            <div className="p-2 bg-gray-50 rounded-lg text-gray-600">
+                {icon}
+            </div>
+        </div>
+        <div className="flex items-end justify-between">
+            <h4 className="text-2xl font-bold text-gray-900">{value}</h4>
+            {change && <span className="text-xs text-green-500">{change}</span>}
         </div>
     </div>
 );
