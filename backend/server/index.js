@@ -48,7 +48,8 @@ app.get('/auth/google/callback', async (req, res) => {
 
   try {
     await getAndSaveToken(code);
-    res.send('Authentication successful! You can now close this tab and return to the dashboard.');
+    // Redirect back to the frontend dashboard with Inbox page specified
+    res.redirect('http://localhost:5173?page=Inbox');
   } catch (error) {
     console.error('Token Error:', error);
     res.status(500).send('Error retrieving token');
@@ -763,6 +764,77 @@ app.get('/api/telegram/status', async (req, res) => {
 
     } catch (error) {
         console.error("Error checking Telegram status:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 18. Check All Platforms Status
+app.get('/api/platforms/status', async (req, res) => {
+    const userId = req.headers['x-user-id'] || 'anonymous';
+    
+    // Check Gmail
+    let gmailConnected = false;
+    try {
+        const gmail = await getGmailClient();
+        gmailConnected = !!gmail;
+    } catch (e) {
+        console.error("Error checking Gmail status:", e);
+        gmailConnected = false;
+    }
+
+    // Check Telegram
+    let telegramConnected = false;
+    try {
+        const session = await TelegramSession.findOne({ userId, isActive: true });
+        telegramConnected = !!session;
+    } catch (e) {
+        console.error("Error checking Telegram status:", e);
+        telegramConnected = false;
+    }
+
+    // Check WhatsApp (Mock for now as implementation is pending)
+    const whatsappConnected = false; 
+
+    res.json({
+        Mail: gmailConnected,
+        Telegram: telegramConnected,
+        Whatsapp: whatsappConnected
+    });
+});
+
+// 19. Disconnect Platform
+app.post('/api/platforms/disconnect/:platform', async (req, res) => {
+    const { platform } = req.params;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    try {
+        if (platform === 'Mail') {
+            const tokenPath = require('path').join(__dirname, 'token.json');
+            try {
+                await require('fs').promises.unlink(tokenPath);
+                // Also reset the oauth client credentials
+                const { oauth2Client } = require('./gmailService');
+                if (oauth2Client) {
+                    oauth2Client.setCredentials({});
+                }
+                res.json({ success: true, message: 'Gmail disconnected' });
+            } catch (err) {
+                if (err.code === 'ENOENT') {
+                    res.json({ success: true, message: 'Gmail was already disconnected' });
+                } else {
+                    throw err;
+                }
+            }
+        } else if (platform === 'Telegram') {
+            await TelegramSession.deleteOne({ userId, isActive: true });
+            // Also disconnect the active client if it exists in memory
+            // (This would require exposing a disconnect method in telegramService, but for now DB removal is enough for persistent state)
+            res.json({ success: true, message: 'Telegram disconnected' });
+        } else {
+            res.status(400).json({ error: 'Unknown platform' });
+        }
+    } catch (error) {
+        console.error(`Error disconnecting ${platform}:`, error);
         res.status(500).json({ error: error.message });
     }
 });

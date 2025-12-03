@@ -14,6 +14,27 @@ const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
 let oauth2Client = null;
 
 /**
+ * Helper to save tokens, merging with existing ones to preserve refresh_token.
+ */
+async function saveTokens(newTokens) {
+  try {
+    let currentTokens = {};
+    try {
+      const content = await fs.readFile(TOKEN_PATH);
+      currentTokens = JSON.parse(content);
+    } catch (e) {
+      // File might not exist yet
+    }
+    
+    const mergedTokens = { ...currentTokens, ...newTokens };
+    await fs.writeFile(TOKEN_PATH, JSON.stringify(mergedTokens));
+    console.log('Tokens updated and saved to disk');
+  } catch (error) {
+    console.error('Error saving tokens:', error);
+  }
+}
+
+/**
  * Reads the credentials.json file and creates an OAuth2 client.
  */
 async function getAuthClient() {
@@ -29,6 +50,12 @@ async function getAuthClient() {
       client_secret, 
       redirect_uris[0]
     );
+
+    // CRITICAL: Listen for token updates (refresh) and save them
+    oauth2Client.on('tokens', (tokens) => {
+      console.log('OAuth2 Client received new tokens (refresh)');
+      saveTokens(tokens);
+    });
 
     // Load existing token if available
     try {

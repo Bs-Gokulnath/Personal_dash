@@ -30,11 +30,12 @@ import {
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { auth } from '../firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import AIPromptModal from '../components/AIPromptModal';
 import DraftPreview from '../components/DraftPreview';
 import TelegramAuthModal from '../components/TelegramAuthModal';
 import PlatformSelector from '../components/PlatformSelector';
+import Connectors from '../components/Connectors';
 
 
 const Dashboard = () => {
@@ -50,6 +51,63 @@ const Dashboard = () => {
     const [isComposeOpen, setIsComposeOpen] = useState(false);
     const [composeData, setComposeData] = useState({ to: '', subject: '', body: '' });
     const [sendingEmail, setSendingEmail] = useState(false);
+
+    // Connectors State
+    const [connectedPlatforms, setConnectedPlatforms] = useState({
+        Mail: false,
+        Whatsapp: false,
+        Telegram: false
+    });
+
+    const fetchPlatformStatus = async () => {
+        try {
+            const response = await fetch('http://localhost:5000/api/platforms/status');
+            if (response.ok) {
+                const data = await response.json();
+                setConnectedPlatforms(data);
+            }
+        } catch (error) {
+            console.error("Error fetching platform status:", error);
+        }
+    };
+
+    useEffect(() => {
+        fetchPlatformStatus();
+    }, []);
+
+    const togglePlatform = async (platformId) => {
+        const isConnected = connectedPlatforms[platformId];
+
+        if (isConnected) {
+            // Handle Disconnection
+            if (window.confirm(`Are you sure you want to disconnect ${platformId}?`)) {
+                try {
+                    const response = await fetch(`http://localhost:5000/api/platforms/disconnect/${platformId}`, {
+                        method: 'POST',
+                        headers: { 'x-user-id': user?.uid || 'anonymous' }
+                    });
+
+                    if (response.ok) {
+                        setConnectedPlatforms(prev => ({ ...prev, [platformId]: false }));
+                    } else {
+                        alert('Failed to disconnect. Please try again.');
+                    }
+                } catch (error) {
+                    console.error("Error disconnecting:", error);
+                    alert('Error disconnecting platform.');
+                }
+            }
+        } else {
+            // Handle Connection
+            if (platformId === 'Mail') {
+                window.location.href = 'http://localhost:5000/auth/google';
+            } else if (platformId === 'Telegram') {
+                setIsTelegramAuthOpen(true);
+            } else if (platformId === 'Whatsapp') {
+                alert("WhatsApp integration is coming soon!");
+            }
+        }
+    };
 
     // Draft States
     const [drafts, setDrafts] = useState({});
@@ -150,6 +208,15 @@ const Dashboard = () => {
     const [isAiThinking, setIsAiThinking] = useState(false);
 
     const navigate = useNavigate();
+    const location = useLocation();
+
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const pageParam = params.get('page');
+        if (pageParam) {
+            setActivePage(pageParam);
+        }
+    }, [location]);
 
     const fetchEmails = async () => {
         if (activePage !== 'Inbox' && activePage !== 'Mail') return;
@@ -448,6 +515,7 @@ const Dashboard = () => {
     const handleTelegramAuthSuccess = () => {
         setTelegramConnected(true);
         fetchTelegramChats();
+        fetchPlatformStatus(); // Update connectors status
     };
 
     useEffect(() => {
@@ -497,9 +565,9 @@ const Dashboard = () => {
 
     // Chart Data
     const pieData = [
-        { name: 'Mail', value: messages.filter(m => m.source === 'Mail').length, color: '#3b82f6' },
-        { name: 'Telegram', value: messages.filter(m => m.source === 'Telegram').length, color: '#8b5cf6' },
-        { name: 'Whatsapp', value: messages.filter(m => m.source === 'Whatsapp').length, color: '#22c55e' },
+        { name: 'Mail', value: connectedPlatforms['Mail'] ? messages.filter(m => m.source === 'Mail').length : 0, color: '#3b82f6' },
+        { name: 'Telegram', value: connectedPlatforms['Telegram'] ? messages.filter(m => m.source === 'Telegram').length : 0, color: '#8b5cf6' },
+        { name: 'Whatsapp', value: connectedPlatforms['Whatsapp'] ? messages.filter(m => m.source === 'Whatsapp').length : 0, color: '#22c55e' },
     ].filter(d => d.value > 0);
 
     const barData = [
@@ -540,12 +608,13 @@ const Dashboard = () => {
                 {/* Logo Area */}
                 <div className="flex h-20 items-center justify-center border-b border-indigo-900 px-4">
                     <div className="flex items-center space-x-2">
-                        <span className={`text-xl font-bold transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'opacity-0 md:hidden md:group-hover:block'} ${!isSidebarOpen && 'md:hidden'}`}>
-                            Crivo's PA
-                        </span>
-                        {/* Show simple logo when collapsed on desktop */}
-                        {!isSidebarOpen && (
-                            <span className="hidden text-xl font-bold md:block">CP</span>
+                        {isSidebarOpen ? (
+                            <div className="flex items-center space-x-2">
+                                <img src="/assets/clogo.jpg" alt="Logo" className="h-8 w-8 rounded-full" />
+                                <span className="text-xl font-bold">Crivo's PA</span>
+                            </div>
+                        ) : (
+                            <img src="/assets/clogo.jpg" alt="Logo" className="h-8 w-8 rounded-full hidden md:block" />
                         )}
                     </div>
                 </div>
@@ -619,6 +688,13 @@ const Dashboard = () => {
                         isOpen={isSidebarOpen}
                         active={activePage === 'Contacts'}
                         onClick={() => handleNavClick('Contacts')}
+                    />
+                    <NavItem
+                        icon={<ArrowRightLeft size={20} />}
+                        label="Connectors"
+                        isOpen={isSidebarOpen}
+                        active={activePage === 'Connectors'}
+                        onClick={() => handleNavClick('Connectors')}
                     />
                 </nav>
 
@@ -704,7 +780,9 @@ const Dashboard = () => {
                     </div>
                 </header>
                 <main className="flex-1 overflow-y-auto p-8">
-                    {activePage === 'Dashboard' ? (
+                    {activePage === 'Connectors' ? (
+                        <Connectors connectedPlatforms={connectedPlatforms} togglePlatform={togglePlatform} />
+                    ) : activePage === 'Dashboard' ? (
                         <>
                             <div className="mb-8 flex items-center justify-between">
                                 <h1 className="text-2xl font-bold text-gray-800">Dashboard Overview</h1>
@@ -799,7 +877,7 @@ const Dashboard = () => {
                                                 <RefreshCw size={20} className={loadingMessages ? 'animate-spin' : ''} />
                                             </button>
                                             <span className="text-sm text-gray-500">
-                                                {loadingMessages ? 'Loading...' : `${messages.filter(m => activePage === 'Inbox' || m.source === activePage).length} messages`}
+                                                {loadingMessages ? 'Loading...' : `${messages.filter(m => connectedPlatforms[m.source] && (activePage === 'Inbox' || m.source === activePage)).length} messages`}
                                             </span>
                                         </>
                                     )}
@@ -814,7 +892,7 @@ const Dashboard = () => {
                                 ) : (
                                     <>
                                         {messages
-                                            .filter(m => activePage === 'Inbox' || m.source === activePage)
+                                            .filter(m => connectedPlatforms[m.source] && (activePage === 'Inbox' || m.source === activePage))
                                             .map((message) => (
                                                 <div key={message.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                                                     <div className="flex flex-col md:flex-row">
