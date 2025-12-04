@@ -115,6 +115,12 @@ async function getGmailClient() {
   const authClient = await getAuthClient();
   if (!authClient) return null;
 
+  // Check if we already have valid credentials in memory
+  if (authClient.credentials && Object.keys(authClient.credentials).length > 0) {
+    return google.gmail({ version: 'v1', auth: authClient });
+  }
+
+  // Fallback: Try to load from disk if not in memory (e.g. if getAuthClient didn't load it for some reason)
   try {
     const token = await fs.readFile(TOKEN_PATH);
     authClient.setCredentials(JSON.parse(token));

@@ -51,6 +51,8 @@ const Dashboard = () => {
     const [isComposeOpen, setIsComposeOpen] = useState(false);
     const [composeData, setComposeData] = useState({ to: '', subject: '', body: '' });
     const [sendingEmail, setSendingEmail] = useState(false);
+    const [isGmailWarningOpen, setIsGmailWarningOpen] = useState(false);
+    const [hasReadWarning, setHasReadWarning] = useState(false);
 
     // Connectors State
     const [connectedPlatforms, setConnectedPlatforms] = useState({
@@ -100,7 +102,7 @@ const Dashboard = () => {
         } else {
             // Handle Connection
             if (platformId === 'Mail') {
-                window.location.href = 'http://localhost:5000/auth/google';
+                setIsGmailWarningOpen(true);
             } else if (platformId === 'Telegram') {
                 setIsTelegramAuthOpen(true);
             } else if (platformId === 'Whatsapp') {
@@ -225,6 +227,13 @@ const Dashboard = () => {
         setErrorMessages(null);
         try {
             const response = await fetch('http://localhost:5000/api/emails');
+
+            if (response.status === 401) {
+                // Session expired or invalid
+                setConnectedPlatforms(prev => ({ ...prev, Mail: false }));
+                return; // Stop processing
+            }
+
             if (!response.ok) {
                 throw new Error('Failed to fetch emails');
             }
@@ -233,7 +242,10 @@ const Dashboard = () => {
             setMessages(prev => [...prev.filter(m => m.source !== 'Mail'), ...data]);
         } catch (err) {
             console.error("Error fetching emails:", err);
-            setErrorMessages("Could not load emails. Please ensure backend is running and authenticated.");
+            // Instead of showing an error, we assume it's a connection issue and redirect to Connectors
+            setErrorMessages(null);
+            setConnectedPlatforms(prev => ({ ...prev, Mail: false }));
+            handleNavClick('Connectors');
         } finally {
             setLoadingMessages(false);
         }
@@ -593,25 +605,25 @@ const Dashboard = () => {
 
             {/* Sidebar */}
             <aside
-                className={`fixed z-50 h-full bg-[#1a1c4b] text-white transition-all duration-300 ease-in-out md:relative
+                className={`fixed z-50 h-full bg-white text-gray-700 border-r border-gray-200 transition-all duration-300 ease-in-out md:relative
                     ${isSidebarOpen ? 'translate-x-0 w-64' : '-translate-x-full md:translate-x-0 md:w-20'}
                 `}
             >
                 {/* Toggle Button - Styled like reference */}
                 <button
                     onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-                    className="absolute -right-3 top-6 z-50 flex h-6 w-6 items-center justify-center rounded-full bg-white text-[#1a1c4b] shadow-md hover:bg-gray-100 focus:outline-none hidden md:flex"
+                    className="absolute -right-3 top-6 z-50 flex h-6 w-6 items-center justify-center rounded-full bg-white text-gray-600 border border-gray-200 shadow-md hover:bg-gray-50 focus:outline-none hidden md:flex"
                 >
                     {isSidebarOpen ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
                 </button>
 
                 {/* Logo Area */}
-                <div className="flex h-20 items-center justify-center border-b border-indigo-900 px-4">
+                <div className="flex h-20 items-center justify-center border-b border-gray-100 px-4">
                     <div className="flex items-center space-x-2">
                         {isSidebarOpen ? (
                             <div className="flex items-center space-x-2">
                                 <img src="/assets/clogo.jpg" alt="Logo" className="h-8 w-8 rounded-full" />
-                                <span className="text-xl font-bold">Crivo's PA</span>
+                                <span className="text-xl font-bold text-gray-800">Crivo's PA</span>
                             </div>
                         ) : (
                             <img src="/assets/clogo.jpg" alt="Logo" className="h-8 w-8 rounded-full hidden md:block" />
@@ -637,8 +649,8 @@ const Dashboard = () => {
                                 handleNavClick('Inbox');
                             }}
                             className={`flex w-full items-center justify-between rounded-lg px-4 py-3 transition-colors ${activePage === 'Inbox'
-                                ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
-                                : 'text-gray-300 hover:bg-indigo-900 hover:text-white'
+                                ? 'bg-blue-50 text-blue-600'
+                                : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
                                 } ${!isSidebarOpen && 'justify-center md:px-2'}`}
                         >
                             <div className="flex items-center space-x-3">
@@ -660,7 +672,7 @@ const Dashboard = () => {
 
                         {/* Dropdown Items */}
                         {(isSidebarOpen && isInboxOpen) && (
-                            <div className="ml-4 mt-1 space-y-1 border-l-2 border-indigo-800 pl-4">
+                            <div className="ml-4 mt-1 space-y-1 border-l-2 border-gray-200 pl-4">
                                 <SubNavItem label="Whatsapp" onClick={() => handleNavClick('Whatsapp')} />
                                 <SubNavItem label="Mail" onClick={() => handleNavClick('Mail')} />
                                 <SubNavItem label="Telegram" onClick={() => handleNavClick('Telegram')} />
@@ -699,7 +711,7 @@ const Dashboard = () => {
                 </nav>
 
                 {/* Bottom Action */}
-                <div className="border-t border-indigo-900 p-4">
+                <div className="border-t border-gray-200 p-4">
                     <button
                         onClick={handleSignOut}
                         className={`flex w-full items-center rounded-lg bg-indigo-600 px-4 py-2 text-center text-sm font-medium text-white hover:bg-indigo-700 ${!isSidebarOpen && 'justify-center'}`}
@@ -738,9 +750,12 @@ const Dashboard = () => {
                     </div>
 
                     <div className="flex items-center space-x-6">
-                        <button className="relative text-gray-500 hover:text-gray-700">
-                            <Bell size={20} />
-                            <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[10px] text-white">3</span>
+                        <button
+                            onClick={() => handleNavClick('Connectors')}
+                            className="px-4 py-2 bg-black text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors flex items-center gap-2"
+                        >
+                            <ArrowRightLeft size={16} />
+                            <span>Connectors</span>
                         </button>
 
                         <div className="relative">
@@ -765,13 +780,13 @@ const Dashboard = () => {
 
                             {/* Profile Dropdown */}
                             {isProfileOpen && (
-                                <div className="absolute right-0 mt-2 w-56 origin-top-right rounded-lg bg-[#1a1c4b] text-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
+                                <div className="absolute right-0 mt-2 w-56 origin-top-right rounded-lg bg-white text-gray-700 shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none border border-gray-100">
                                     <div className="p-1">
                                         <DropdownItem icon={<User size={16} />} label="Profile" onClick={() => handleNavClick('Profile')} />
                                         <DropdownItem icon={<Settings size={16} />} label="Settings" onClick={() => handleNavClick('Settings')} />
                                         <DropdownItem icon={<Inbox size={16} />} label="Inbox" onClick={() => { setIsInboxOpen(true); handleNavClick('Inbox'); setIsProfileOpen(false); }} />
                                         <DropdownItem icon={<LayoutDashboard size={16} />} label="Dashboard" onClick={() => { handleNavClick('Dashboard'); setIsProfileOpen(false); }} />
-                                        <div className="my-1 h-px bg-indigo-800" />
+                                        <div className="my-1 h-px bg-gray-100" />
                                         <DropdownItem icon={<LogOut size={16} />} label="Log out" onClick={handleSignOut} />
                                     </div>
                                 </div>
@@ -1202,6 +1217,65 @@ const Dashboard = () => {
             >
                 {isAIChatOpen ? <X size={24} /> : <Wand2 size={24} />}
             </button>
+
+            {/* Gmail Warning Modal */}
+            {isGmailWarningOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsGmailWarningOpen(false)}>
+                    <div className="w-full max-w-md rounded-xl bg-white shadow-2xl p-6" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-lg font-bold text-gray-900 mb-4">Connecting Gmail</h3>
+
+                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+                            <h4 className="text-sm font-semibold text-yellow-800 mb-2">Important: Verification Required</h4>
+                            <p className="text-sm text-yellow-700 mb-2">
+                                You might see an <strong>"Access blocked"</strong> error from Google. This is normal during testing.
+                            </p>
+                            <ul className="list-disc list-inside text-sm text-yellow-700 space-y-1">
+                                <li>The app is in "Testing" mode.</li>
+                                <li>Your email must be added to the <strong>Test Users</strong> list by the developer.</li>
+                            </ul>
+                        </div>
+
+                        <div className="mb-6 flex items-start space-x-3">
+                            <input
+                                type="checkbox"
+                                id="readWarning"
+                                checked={hasReadWarning}
+                                onChange={(e) => setHasReadWarning(e.target.checked)}
+                                className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <label htmlFor="readWarning" className="text-sm text-gray-600">
+                                I have read the above and confirmed that my email is added to the Test Users list.
+                            </label>
+                        </div>
+
+                        <div className="flex justify-end space-x-3">
+                            <button
+                                onClick={() => {
+                                    setIsGmailWarningOpen(false);
+                                    setHasReadWarning(false);
+                                }}
+                                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => {
+                                    window.location.href = 'http://localhost:5000/auth/google';
+                                    setIsGmailWarningOpen(false);
+                                    setHasReadWarning(false);
+                                }}
+                                disabled={!hasReadWarning}
+                                className={`px-4 py-2 rounded-lg transition-colors text-white ${hasReadWarning
+                                    ? 'bg-blue-600 hover:bg-blue-700'
+                                    : 'bg-gray-300 cursor-not-allowed'
+                                    }`}
+                            >
+                                I Understand, Proceed
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* AI Chat Window */}
             {
