@@ -46,7 +46,7 @@ const DraftPreview = ({ draft, onClose, onSend, onImprove }) => {
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-            <div className="w-full max-w-3xl rounded-xl bg-white shadow-2xl flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+            <div className="w-full max-w-5xl rounded-xl bg-white shadow-2xl flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
                 {/* Header */}
                 <div className="flex items-center justify-between border-b border-gray-200 p-6 bg-gradient-to-r from-green-50 to-blue-50">
                     <div>
@@ -125,8 +125,8 @@ const DraftPreview = ({ draft, onClose, onSend, onImprove }) => {
                                     onClick={handleImprove}
                                     disabled={isImproving || !improveInstruction.trim()}
                                     className={`px-4 py-2 text-sm font-medium text-white rounded-lg flex items-center space-x-2 ${isImproving || !improveInstruction.trim()
-                                            ? 'bg-gray-400 cursor-not-allowed'
-                                            : 'bg-purple-600 hover:bg-purple-700'
+                                        ? 'bg-gray-400 cursor-not-allowed'
+                                        : 'bg-purple-600 hover:bg-purple-700'
                                         }`}
                                 >
                                     {isImproving ? (
@@ -168,8 +168,8 @@ const DraftPreview = ({ draft, onClose, onSend, onImprove }) => {
                             onClick={handleSend}
                             disabled={isSending || !editedDraft.to || !editedDraft.subject}
                             className={`px-6 py-2 text-sm font-medium text-white rounded-lg transition-all flex items-center space-x-2 ${isSending || !editedDraft.to || !editedDraft.subject
-                                    ? 'bg-gray-400 cursor-not-allowed'
-                                    : 'bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700 shadow-lg'
+                                ? 'bg-gray-400 cursor-not-allowed'
+                                : 'bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700 shadow-lg'
                                 }`}
                         >
                             {isSending ? (

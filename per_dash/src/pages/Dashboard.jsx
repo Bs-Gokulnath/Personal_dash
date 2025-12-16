@@ -25,7 +25,16 @@ import {
     ArrowRightLeft,
     Package,
     PieChart as PieChartIcon,
-    BarChart as BarChartIcon
+    BarChart as BarChartIcon,
+    Pencil,
+    Star,
+    Clock,
+    File,
+    Tag,
+    Plus,
+    AlertCircle,
+    Trash2,
+    Archive
 } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { auth } from '../firebase';
@@ -36,6 +45,48 @@ import DraftPreview from '../components/DraftPreview';
 import TelegramAuthModal from '../components/TelegramAuthModal';
 import PlatformSelector from '../components/PlatformSelector';
 import Connectors from '../components/Connectors';
+import Overview from '../components/Overview';
+
+const MailSidebarItem = ({ icon, label, count, active, onClick }) => (
+    <button
+        onClick={onClick}
+        className={`flex w-full items-center justify-between rounded-r-full px-6 py-2 text-sm font-medium transition-colors mb-1
+            ${active ? 'bg-blue-50 text-blue-700' : 'text-gray-700 hover:bg-gray-100'}`}
+    >
+        <div className="flex items-center gap-4">
+            <span className={active ? 'text-blue-700' : 'text-gray-500'}>{icon}</span>
+            <span>{label}</span>
+        </div>
+        {count && <span className={`text-xs ${active ? 'font-bold' : ''}`}>{count}</span>}
+    </button>
+);
+
+const MailTab = ({ icon, label, badge, active, onClick, color }) => {
+    const activeColorClass = {
+        blue: 'text-blue-600 border-blue-600',
+        green: 'text-green-600 border-green-600',
+        orange: 'text-orange-600 border-orange-600'
+    }[color] || 'text-blue-600 border-blue-600';
+
+    return (
+        <button
+            onClick={onClick}
+            className={`flex-1 flex items-center gap-3 px-4 py-4 border-b-3 transition-all hover:bg-gray-50 min-w-[200px]
+                ${active ? activeColorClass + ' bg-gray-50' : 'border-transparent text-gray-500 bg-white'}`}
+        >
+            {icon}
+            <div className="flex-1 text-left flex items-center justify-between">
+                <span className={`text-sm font-medium ${active ? 'text-gray-900' : ''}`}>{label}</span>
+                {badge && (
+                    <span className={`ml-2 text-[10px] px-2 py-0.5 rounded-full text-white font-bold
+                    ${color === 'green' ? 'bg-green-600' : color === 'blue' ? 'bg-blue-600' : 'bg-orange-500'}`}>
+                        {badge}
+                    </span>
+                )}
+            </div>
+        </button>
+    );
+};
 
 
 const Dashboard = () => {
@@ -43,7 +94,10 @@ const Dashboard = () => {
     const [isInboxOpen, setIsInboxOpen] = useState(true);
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [isProfileOpen, setIsProfileOpen] = useState(false);
-    const [activePage, setActivePage] = useState('Inbox');
+    const [activePage, setActivePage] = useState(() => {
+        const savedPage = localStorage.getItem('activePage');
+        return savedPage || 'Dashboard';
+    });
     const [messages, setMessages] = useState([]); // Start with empty - will be populated with real data
     const [loadingMessages, setLoadingMessages] = useState(false);
     const [errorMessages, setErrorMessages] = useState(null);
@@ -53,6 +107,34 @@ const Dashboard = () => {
     const [sendingEmail, setSendingEmail] = useState(false);
     const [isGmailWarningOpen, setIsGmailWarningOpen] = useState(false);
     const [hasReadWarning, setHasReadWarning] = useState(false);
+    const [mailTab, setMailTab] = useState(() => {
+        const savedTab = localStorage.getItem('mailTab');
+        return savedTab || 'Primary';
+    });
+    const [visibleNavItems, setVisibleNavItems] = useState(() => {
+        const savedItems = localStorage.getItem('visibleNavItems');
+        return savedItems ? JSON.parse(savedItems) : ['Dashboard', 'Inbox', 'Whatsapp'];
+    }); // Default visible items
+    const [isNavCustomizeOpen, setIsNavCustomizeOpen] = useState(false);
+
+    const allNavItems = [
+        { id: 'Dashboard', label: 'Overview' },
+        { id: 'Inbox', label: 'Mail' },
+        { id: 'Whatsapp', label: 'Whatsapp' },
+        { id: 'Telegram', label: 'Telegram' }
+    ];
+
+    const handleNavToggle = (itemId) => {
+        setVisibleNavItems(prev => {
+            const newItems = prev.includes(itemId)
+                ? prev.filter(id => id !== itemId)
+                : [...prev, itemId];
+
+            localStorage.setItem('visibleNavItems', JSON.stringify(newItems));
+            return newItems;
+        });
+    };
+    const [mailFolder, setMailFolder] = useState('inbox');
 
     // Connectors State
     const [connectedPlatforms, setConnectedPlatforms] = useState({
@@ -137,12 +219,23 @@ const Dashboard = () => {
             });
             const data = await response.json();
             if (data.success) {
-                // Extract body and strip HTML for quick view
+                // Extract body
                 const bodyHtml = data.draft.body || '';
                 const tempDiv = document.createElement("div");
                 tempDiv.innerHTML = bodyHtml;
                 const bodyText = tempDiv.textContent || tempDiv.innerText || "";
+
+                // Save to drafts state
                 setDrafts(prev => ({ ...prev, [message.id]: bodyText }));
+
+                // Open Preview Modal
+                const recipientEmail = message.sender.match(/<(.+?)>/)?.[1] || message.sender;
+                setGeneratedDraft({
+                    to: recipientEmail,
+                    subject: `Re: ${message.subject}`,
+                    body: bodyHtml || bodyText // Prefer HTML if available, otherwise text
+                });
+                setShowDraftPreview(true);
             }
         } catch (error) {
             console.error("Draft generation failed", error);
@@ -151,7 +244,9 @@ const Dashboard = () => {
         }
     };
 
-    const [reviewDraft, setReviewDraft] = useState(null);
+    // Remove separate reviewDraft state if it exists or reuse it? 
+    // We'll migrate to using generatedDraft for consistency with the DraftPreview component.
+    // const [reviewDraft, setReviewDraft] = useState(null); // Commented out or removed
 
     const handleOpenReview = (message) => {
         const recipientEmail = message.sender.match(/<(.+?)>/)?.[1] || message.sender;
@@ -159,35 +254,15 @@ const Dashboard = () => {
 
         if (!draftBody) return;
 
-        setReviewDraft({
+        setGeneratedDraft({
             to: recipientEmail,
             subject: `Re: ${message.subject}`,
-            body: draftBody,
-            messageId: message.id
+            body: draftBody
         });
+        setShowDraftPreview(true);
     };
 
-    const handleSendReviewedDraft = async (draft) => {
-        const response = await fetch('http://localhost:5000/api/send-email', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                to: draft.to,
-                subject: draft.subject,
-                body: draft.body
-            }),
-        });
 
-        if (!response.ok) throw new Error('Failed to send email');
-
-        alert('Reply sent successfully!');
-        setDrafts(prev => {
-            const newDrafts = { ...prev };
-            if (reviewDraft?.messageId) delete newDrafts[reviewDraft.messageId];
-            return newDrafts;
-        });
-        setReviewDraft(null);
-    };
 
     // AI Assistant States
     const [isAIPromptOpen, setIsAIPromptOpen] = useState(false);
@@ -217,6 +292,7 @@ const Dashboard = () => {
         const pageParam = params.get('page');
         if (pageParam) {
             setActivePage(pageParam);
+            localStorage.setItem('activePage', pageParam);
         }
     }, [location]);
 
@@ -566,6 +642,7 @@ const Dashboard = () => {
 
     const handleNavClick = (page) => {
         setActivePage(page);
+        localStorage.setItem('activePage', page);
         if (page !== 'Inbox' && !['Whatsapp', 'Mail', 'Telegram'].includes(page)) {
             setIsProfileOpen(false);
         }
@@ -593,258 +670,143 @@ const Dashboard = () => {
     if (!user) return <div className="flex h-screen items-center justify-center bg-gray-50 text-gray-600">Loading...</div>;
 
     return (
-        <div className="flex h-screen bg-gray-100 font-sans text-gray-900">
-
-            {/* Mobile Overlay */}
-            {isSidebarOpen && (
-                <div
-                    className="fixed inset-0 z-40 bg-black/50 md:hidden"
-                    onClick={() => setIsSidebarOpen(false)}
-                />
-            )}
-
-            {/* Sidebar */}
-            <aside
-                className={`fixed z-50 h-full bg-white text-gray-700 border-r border-gray-200 transition-all duration-300 ease-in-out md:relative
-                    ${isSidebarOpen ? 'translate-x-0 w-64' : '-translate-x-full md:translate-x-0 md:w-20'}
-                `}
-            >
-                {/* Toggle Button - Styled like reference */}
-                <button
-                    onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-                    className="absolute -right-3 top-6 z-50 flex h-6 w-6 items-center justify-center rounded-full bg-white text-gray-600 border border-gray-200 shadow-md hover:bg-gray-50 focus:outline-none hidden md:flex"
-                >
-                    {isSidebarOpen ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
-                </button>
-
-                {/* Logo Area */}
-                <div className="flex h-20 items-center justify-center border-b border-gray-100 px-4">
-                    <div className="flex items-center space-x-2">
-                        {isSidebarOpen ? (
-                            <div className="flex items-center space-x-2">
-                                <img src="/assets/clogo.jpg" alt="Logo" className="h-8 w-8 rounded-full" />
-                                <span className="text-xl font-bold text-gray-800">Crivo's PA</span>
-                            </div>
-                        ) : (
-                            <img src="/assets/clogo.jpg" alt="Logo" className="h-8 w-8 rounded-full hidden md:block" />
-                        )}
-                    </div>
+        <div className="flex flex-col h-screen bg-gray-100 font-sans text-gray-900">
+            <header className="flex h-20 flex-shrink-0 items-center justify-between bg-white px-8 shadow-sm relative z-40">
+                {/* Left: Logo */}
+                <div className="flex items-center space-x-2 w-48">
+                    <img src="/assets/clogo.jpg" alt="Logo" className="h-8 w-8 rounded-full" />
+                    <span className="text-xl font-bold text-gray-800">Crivo's PA</span>
                 </div>
 
-                {/* Navigation */}
-                <nav className="flex-1 space-y-2 overflow-y-auto py-6 px-3">
-                    <NavItem
-                        icon={<Home size={20} />}
-                        label="Home"
-                        isOpen={isSidebarOpen}
-                        active={activePage === 'Home'}
-                        onClick={() => handleNavClick('Home')}
-                    />
-
-                    {/* Inbox Dropdown */}
-                    <div>
+                {/* Center: Navigation Pills */}
+                {/* Center: Navigation Pills */}
+                <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 hidden md:flex items-center space-x-2">
+                    {allNavItems.filter(item => visibleNavItems.includes(item.id)).map((item) => (
                         <button
-                            onClick={() => {
-                                setIsInboxOpen(true);
-                                handleNavClick('Inbox');
-                            }}
-                            className={`flex w-full items-center justify-between rounded-lg px-4 py-3 transition-colors ${activePage === 'Inbox'
-                                ? 'bg-blue-50 text-blue-600'
-                                : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
-                                } ${!isSidebarOpen && 'justify-center md:px-2'}`}
+                            key={item.id}
+                            onClick={() => handleNavClick(item.id)}
+                            className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${(activePage === item.id) || (item.id === 'Inbox' && activePage === 'Mail')
+                                ? 'border-2 border-indigo-500 text-indigo-900 bg-white'
+                                : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                                }`}
                         >
-                            <div className="flex items-center space-x-3">
-                                <Inbox size={20} />
-                                {isSidebarOpen && <span>Inbox</span>}
-                            </div>
-                            {isSidebarOpen && (
-                                <div
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        setIsInboxOpen(!isInboxOpen);
-                                    }}
-                                    className="p-1 hover:bg-white/10 rounded"
-                                >
-                                    {isInboxOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                                </div>
-                            )}
+                            {item.label}
                         </button>
+                    ))}
 
-                        {/* Dropdown Items */}
-                        {(isSidebarOpen && isInboxOpen) && (
-                            <div className="ml-4 mt-1 space-y-1 border-l-2 border-gray-200 pl-4">
-                                <SubNavItem label="Whatsapp" onClick={() => handleNavClick('Whatsapp')} />
-                                <SubNavItem label="Mail" onClick={() => handleNavClick('Mail')} />
-                                <SubNavItem label="Telegram" onClick={() => handleNavClick('Telegram')} />
-                            </div>
-                        )}
-                    </div>
-
-                    <NavItem
-                        icon={<Calendar size={20} />}
-                        label="Calendar"
-                        isOpen={isSidebarOpen}
-                        active={activePage === 'Calendar'}
-                        onClick={() => handleNavClick('Calendar')}
-                    />
-                    <NavItem
-                        icon={<LayoutDashboard size={20} />}
-                        label="Dashboard"
-                        isOpen={isSidebarOpen}
-                        active={activePage === 'Dashboard'}
-                        onClick={() => handleNavClick('Dashboard')}
-                    />
-                    <NavItem
-                        icon={<Users size={20} />}
-                        label="Contacts"
-                        isOpen={isSidebarOpen}
-                        active={activePage === 'Contacts'}
-                        onClick={() => handleNavClick('Contacts')}
-                    />
-                    <NavItem
-                        icon={<ArrowRightLeft size={20} />}
-                        label="Connectors"
-                        isOpen={isSidebarOpen}
-                        active={activePage === 'Connectors'}
-                        onClick={() => handleNavClick('Connectors')}
-                    />
-                </nav>
-
-                {/* Bottom Action */}
-                <div className="border-t border-gray-200 p-4">
+                    {/* Fixed Connectors Item */}
                     <button
-                        onClick={handleSignOut}
-                        className={`flex w-full items-center rounded-lg bg-indigo-600 px-4 py-2 text-center text-sm font-medium text-white hover:bg-indigo-700 ${!isSidebarOpen && 'justify-center'}`}
+                        onClick={() => handleNavClick('Connectors')}
+                        className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${activePage === 'Connectors'
+                            ? 'border-2 border-indigo-500 text-indigo-900 bg-white'
+                            : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
+                            }`}
                     >
-                        {isSidebarOpen ? (
-                            <>
-                                <LogOut size={16} className="mr-2" />
-                                <span>Sign Out</span>
-                            </>
-                        ) : (
-                            <LogOut size={20} />
-                        )}
+                        Connectors
                     </button>
-                </div>
-            </aside>
 
-            {/* Main Content */}
-            <div className="flex flex-1 flex-col overflow-hidden">
-                {/* Header */}
-                <header className="flex h-20 items-center justify-between bg-white px-8 shadow-sm relative z-40">
-                    <div className="flex items-center">
+                    {/* Customize Button */}
+                    <div className="relative">
                         <button
-                            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-                            className="mr-4 text-gray-500 focus:outline-none md:hidden"
+                            onClick={() => setIsNavCustomizeOpen(!isNavCustomizeOpen)}
+                            className="p-2 rounded-full text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
                         >
-                            <Menu size={24} />
-                        </button>
-                        <div className="relative hidden md:block">
-                            <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
-                            <input
-                                type="text"
-                                placeholder="Search..."
-                                className="h-10 w-64 rounded-full bg-gray-100 pl-10 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
-                        </div>
-                    </div>
-
-                    <div className="flex items-center space-x-6">
-                        <button
-                            onClick={() => handleNavClick('Connectors')}
-                            className="px-4 py-2 bg-black text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors flex items-center gap-2"
-                        >
-                            <ArrowRightLeft size={16} />
-                            <span>Connectors</span>
+                            <Plus size={20} />
                         </button>
 
-                        <div className="relative">
-                            <button
-                                onClick={() => setIsProfileOpen(!isProfileOpen)}
-                                className="flex items-center space-x-3 border-l border-gray-200 pl-6 focus:outline-none"
-                            >
-                                <div className="text-right hidden md:block">
-                                    <p className="text-sm font-semibold text-gray-800">{user.displayName || user.email.split('@')[0]}</p>
-                                    <p className="text-xs text-gray-500">Admin</p>
+                        {/* Customization Dropdown */}
+                        {isNavCustomizeOpen && (
+                            <div className="absolute top-full left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-gray-100 p-4 z-50 animate-in fade-in zoom-in-95 duration-200">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h3 className="font-semibold text-gray-900">Customize menu</h3>
+                                    <button onClick={() => setIsNavCustomizeOpen(false)} className="text-gray-400 hover:text-gray-600"><X size={16} /></button>
                                 </div>
-                                <div className="h-10 w-10 overflow-hidden rounded-full border-2 border-white shadow-md">
-                                    {user.photoURL ? (
-                                        <img src={user.photoURL} alt="Profile" className="h-full w-full object-cover" />
-                                    ) : (
-                                        <div className="flex h-full w-full items-center justify-center bg-blue-500 text-white font-bold">
-                                            {(user.displayName || user.email || 'U')[0].toUpperCase()}
-                                        </div>
-                                    )}
-                                </div>
-                            </button>
-
-                            {/* Profile Dropdown */}
-                            {isProfileOpen && (
-                                <div className="absolute right-0 mt-2 w-56 origin-top-right rounded-lg bg-white text-gray-700 shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none border border-gray-100">
-                                    <div className="p-1">
-                                        <DropdownItem icon={<User size={16} />} label="Profile" onClick={() => handleNavClick('Profile')} />
-                                        <DropdownItem icon={<Settings size={16} />} label="Settings" onClick={() => handleNavClick('Settings')} />
-                                        <DropdownItem icon={<Inbox size={16} />} label="Inbox" onClick={() => { setIsInboxOpen(true); handleNavClick('Inbox'); setIsProfileOpen(false); }} />
-                                        <DropdownItem icon={<LayoutDashboard size={16} />} label="Dashboard" onClick={() => { handleNavClick('Dashboard'); setIsProfileOpen(false); }} />
-                                        <div className="my-1 h-px bg-gray-100" />
-                                        <DropdownItem icon={<LogOut size={16} />} label="Log out" onClick={handleSignOut} />
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </header>
-                <main className="flex-1 overflow-y-auto p-8">
-                    {activePage === 'Connectors' ? (
-                        <Connectors connectedPlatforms={connectedPlatforms} togglePlatform={togglePlatform} />
-                    ) : activePage === 'Dashboard' ? (
-                        <>
-                            <div className="mb-8 flex items-center justify-between">
-                                <h1 className="text-2xl font-bold text-gray-800">Dashboard Overview</h1>
-                                <div className="flex space-x-2">
-                                    <span className="text-sm text-gray-500">Today, {new Date().toLocaleDateString()}</span>
-                                </div>
-                            </div>
-
-                            {/* Stats Cards */}
-                            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-                                <StatCard title="Total Sales" value="$3,450" change="+25%" isPositive={true} />
-                                <StatCard title="Total Revenue" value="$35,256" change="+15%" isPositive={true} />
-                                <StatCard title="Average Price" value="$35.25" change="-15%" isPositive={false} />
-                                <StatCard title="Active Users" value="15,893" change="+12%" isPositive={true} />
-                            </div>
-
-                            {/* Charts Section Placeholder */}
-                            <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
-                                <div className="rounded-xl bg-white p-6 shadow-sm lg:col-span-2">
-                                    <h3 className="mb-4 text-lg font-semibold text-gray-800">Market Overview</h3>
-                                    <div className="flex h-64 items-center justify-center rounded-lg bg-gray-50 border border-dashed border-gray-300">
-                                        <span className="text-gray-400">Chart Placeholder</span>
-                                    </div>
-                                </div>
-                                <div className="rounded-xl bg-white p-6 shadow-sm">
-                                    <h3 className="mb-4 text-lg font-semibold text-gray-800">Recent Activity</h3>
-                                    <div className="space-y-4">
-                                        {[1, 2, 3, 4].map((i) => (
-                                            <div key={i} className="flex items-center justify-between border-b border-gray-100 pb-3 last:border-0">
-                                                <div className="flex items-center space-x-3">
-                                                    <div className="h-8 w-8 rounded-full bg-blue-100"></div>
-                                                    <div>
-                                                        <p className="text-sm font-medium">New Order #{1000 + i}</p>
-                                                        <p className="text-xs text-gray-500">2 mins ago</p>
-                                                    </div>
+                                <p className="text-xs text-gray-500 mb-3">Select the tools you use most</p>
+                                <div className="space-y-2">
+                                    {allNavItems.map((item) => (
+                                        <div key={item.id} className="flex items-center justify-between p-2 hover:bg-gray-50 rounded-lg cursor-pointer" onClick={() => handleNavToggle(item.id)}>
+                                            <div className="flex items-center gap-3">
+                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${item.id === 'Dashboard' ? 'bg-purple-100 text-purple-600' :
+                                                    item.id === 'Inbox' ? 'bg-blue-100 text-blue-600' :
+                                                        item.id === 'Whatsapp' ? 'bg-green-100 text-green-600' :
+                                                            item.id === 'Telegram' ? 'bg-sky-100 text-sky-600' :
+                                                                'bg-orange-100 text-orange-600'
+                                                    }`}>
+                                                    {item.id === 'Dashboard' ? <LayoutDashboard size={16} /> :
+                                                        item.id === 'Inbox' ? <Mail size={16} /> :
+                                                            item.id === 'Whatsapp' ? <MessageSquare size={16} /> :
+                                                                item.id === 'Telegram' ? <Send size={16} /> :
+                                                                    <RefreshCw size={16} />}
                                                 </div>
-                                                <span className="text-sm font-semibold text-green-600">+$120</span>
+                                                <span className="text-sm font-medium text-gray-700">{item.label}</span>
                                             </div>
-                                        ))}
+                                            <div className={`w-5 h-5 rounded flex items-center justify-center border transition-colors ${visibleNavItems.includes(item.id)
+                                                ? 'bg-blue-600 border-blue-600'
+                                                : 'border-gray-300 bg-white'
+                                                }`}>
+                                                {visibleNavItems.includes(item.id) && <span className="text-white text-xs">✓</span>}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                                <button
+                                    onClick={() => setIsNavCustomizeOpen(false)}
+                                    className="w-full mt-4 bg-blue-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+                                >
+                                    Done
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* Right: Profile & Settings */}
+                <div className="flex items-center justify-end space-x-6 w-48">
+                    <div className="relative">
+                        <button
+                            onClick={() => setIsProfileOpen(!isProfileOpen)}
+                            className="flex items-center space-x-3 border-l border-gray-200 pl-6 focus:outline-none"
+                        >
+                            <div className="text-right hidden md:block">
+                                <p className="text-sm font-semibold text-gray-800">{user.displayName || user.email.split('@')[0]}</p>
+                                <p className="text-xs text-gray-500">Admin</p>
+                            </div>
+                            <div className="h-10 w-10 overflow-hidden rounded-full border-2 border-white shadow-md">
+                                {user.photoURL ? (
+                                    <img src={user.photoURL} alt="Profile" className="h-full w-full object-cover" />
+                                ) : (
+                                    <div className="flex h-full w-full items-center justify-center bg-blue-500 text-white font-bold">
+                                        {(user.displayName || user.email || 'U')[0].toUpperCase()}
                                     </div>
+                                )}
+                            </div>
+                        </button>
+
+                        {/* Profile Dropdown */}
+                        {isProfileOpen && (
+                            <div className="absolute right-0 mt-2 w-56 origin-top-right rounded-lg bg-white text-gray-700 shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none border border-gray-100">
+                                <div className="p-1">
+                                    <DropdownItem icon={<User size={16} />} label="Profile" onClick={() => handleNavClick('Profile')} />
+                                    <DropdownItem icon={<Settings size={16} />} label="Settings" onClick={() => handleNavClick('Settings')} />
+                                    <div className="my-1 h-px bg-gray-100" />
+                                    <DropdownItem icon={<LogOut size={16} />} label="Log out" onClick={handleSignOut} />
                                 </div>
                             </div>
-                        </>
-                    ) : ['Inbox', 'Whatsapp', 'Mail', 'Telegram'].includes(activePage) ? (
+                        )}
+                    </div>
+                </div>
+            </header>
+            <main className="flex-1 overflow-y-auto p-8">
+                {activePage === 'Connectors' ? (
+                    <Connectors connectedPlatforms={connectedPlatforms} togglePlatform={togglePlatform} />
+                ) : activePage === 'Dashboard' ? (
+                    <Overview messages={messages} connectedPlatforms={connectedPlatforms} user={user} />
+                ) : ['Inbox', 'Whatsapp', 'Mail', 'Telegram'].includes(activePage) ? (
+                    (activePage === 'Whatsapp' || activePage === 'Telegram') ? (
+                        /* Original Layout for Chat Apps */
                         <div className="space-y-6">
                             <div className="flex items-center justify-between">
-                                <h1 className="text-2xl font-bold text-gray-800">{activePage === 'Inbox' ? 'All Messages' : `${activePage} Messages`}</h1>
+                                <h1 className="text-2xl font-bold text-gray-800">{activePage} Messages</h1>
                                 <div className="flex items-center space-x-4">
                                     {activePage === 'Telegram' && !telegramConnected && (
                                         <button
@@ -855,8 +817,6 @@ const Dashboard = () => {
                                             <span>Connect Telegram</span>
                                         </button>
                                     )}
-
-                                    {/* Refresh button for Telegram */}
                                     {activePage === 'Telegram' && telegramConnected && (
                                         <button
                                             onClick={fetchTelegramChats}
@@ -866,52 +826,18 @@ const Dashboard = () => {
                                             <RefreshCw size={20} />
                                         </button>
                                     )}
-
-                                    {/* Compose button only for Mail and Inbox */}
-                                    {(activePage === 'Mail' || activePage === 'Inbox') && (
-                                        <button
-                                            onClick={() => {
-                                                setComposeData({ to: '', subject: '', body: '' });
-                                                setIsComposeOpen(true);
-                                            }}
-                                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
-                                            title="Compose Email"
-                                        >
-                                            Compose
-                                        </button>
-                                    )}
-
-                                    {/* Refresh button for Mail */}
-                                    {(activePage === 'Mail' || activePage === 'Inbox') && (
-                                        <>
-                                            <button
-                                                onClick={fetchEmails}
-                                                className="p-2 text-gray-500 hover:text-blue-600 transition-colors rounded-full hover:bg-blue-50"
-                                                title="Refresh Emails"
-                                            >
-                                                <RefreshCw size={20} className={loadingMessages ? 'animate-spin' : ''} />
-                                            </button>
-                                            <span className="text-sm text-gray-500">
-                                                {loadingMessages ? 'Loading...' : `${messages.filter(m => connectedPlatforms[m.source] && (activePage === 'Inbox' || m.source === activePage)).length} messages`}
-                                            </span>
-                                        </>
-                                    )}
                                 </div>
                             </div>
-
                             <div className="rounded-xl bg-white shadow-sm overflow-hidden">
                                 {loadingMessages ? (
                                     <div className="p-8 text-center text-gray-500">Loading messages...</div>
-                                ) : (errorMessages && (activePage === 'Mail' || activePage === 'Inbox')) ? (
-                                    <div className="p-8 text-center text-red-500">{errorMessages}</div>
                                 ) : (
                                     <>
                                         {messages
-                                            .filter(m => connectedPlatforms[m.source] && (activePage === 'Inbox' || m.source === activePage))
+                                            .filter(m => m.source === activePage)
                                             .map((message) => (
                                                 <div key={message.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
                                                     <div className="flex flex-col md:flex-row">
-                                                        {/* Left: Message Content */}
                                                         <div
                                                             className="flex-1 p-4 cursor-pointer border-r border-gray-100"
                                                             onClick={() => {
@@ -921,8 +847,7 @@ const Dashboard = () => {
                                                         >
                                                             <div className="flex items-center space-x-4">
                                                                 <div className={`flex h-10 w-10 items-center justify-center rounded-full text-white font-bold flex-shrink-0
-                                                                    ${message.source === 'Whatsapp' ? 'bg-green-500' :
-                                                                        message.source === 'Telegram' ? 'bg-blue-400' : 'bg-red-500'}`}>
+                                                                    ${message.source === 'Whatsapp' ? 'bg-green-500' : 'bg-blue-400'}`}>
                                                                     {message.source[0]}
                                                                 </div>
                                                                 <div className="min-w-0 flex-1">
@@ -935,111 +860,209 @@ const Dashboard = () => {
                                                                 </div>
                                                             </div>
                                                         </div>
-
-                                                        {/* Right: AI Draft */}
-                                                        <div className="w-full md:w-1/2 p-4 bg-gray-50/50">
-                                                            <div className="bg-white rounded-lg border border-gray-200 p-3 h-full flex flex-col shadow-sm min-h-[120px]">
-                                                                <div className="flex justify-between items-center mb-2">
-                                                                    <span className="text-xs font-bold text-purple-600 flex items-center gap-1">
-                                                                        <Sparkles size={12} /> AI Draft
-                                                                    </span>
-                                                                    <div className="flex gap-2">
-                                                                        {drafts[message.id] && (
-                                                                            <button
-                                                                                onClick={(e) => {
-                                                                                    e.stopPropagation();
-                                                                                    handleOpenReview(message);
-                                                                                }}
-                                                                                className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 transition-colors flex items-center gap-1"
-                                                                            >
-                                                                                <FileText size={12} /> Review
-                                                                            </button>
-                                                                        )}
-                                                                        <button
-                                                                            onClick={(e) => {
-                                                                                e.stopPropagation();
-                                                                                handleQuickDraft(message);
-                                                                            }}
-                                                                            disabled={loadingDrafts[message.id]}
-                                                                            className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded hover:bg-purple-200 disabled:opacity-50 transition-colors"
-                                                                        >
-                                                                            {loadingDrafts[message.id] ? 'Generating...' : drafts[message.id] ? 'Regenerate' : 'Generate'}
-                                                                        </button>
-                                                                    </div>
-                                                                </div>
-
-                                                                {drafts[message.id] ? (
-                                                                    <textarea
-                                                                        className="flex-1 w-full text-sm text-gray-600 resize-none border-none focus:ring-0 bg-transparent p-0"
-                                                                        value={drafts[message.id]}
-                                                                        onChange={(e) => setDrafts(prev => ({ ...prev, [message.id]: e.target.value }))}
-                                                                    />
-                                                                ) : (
-                                                                    <div className="flex-1 flex items-center justify-center text-gray-400 text-xs italic p-4 text-center">
-                                                                        Click Generate to create a draft response based on this message.
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        </div>
                                                     </div>
                                                 </div>
                                             ))}
-
-                                        {messages.filter(m => activePage === 'Inbox' || m.source === activePage).length === 0 && (
+                                        {messages.filter(m => m.source === activePage).length === 0 && (
                                             <div className="p-12 text-center">
                                                 <div className="mx-auto w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-4">
-                                                    {activePage === 'Whatsapp' && <MessageSquare className="text-gray-400" size={32} />}
-                                                    {activePage === 'Mail' && <Mail className="text-gray-400" size={32} />}
-                                                    {activePage === 'Telegram' && <MessageSquare className="text-gray-400" size={32} />}
-                                                    {activePage === 'Inbox' && <Inbox className="text-gray-400" size={32} />}
+                                                    <MessageSquare className="text-gray-400" size={32} />
                                                 </div>
-                                                <h3 className="text-lg font-semibold text-gray-700 mb-2">
-                                                    {activePage === 'Inbox' ? 'No Messages' : `${activePage} Not Connected`}
-                                                </h3>
+                                                <h3 className="text-lg font-semibold text-gray-700 mb-2">{activePage} Not Connected</h3>
                                                 <p className="text-sm text-gray-500">
                                                     {activePage === 'Whatsapp' && 'Connect your WhatsApp account to view messages'}
-                                                    {activePage === 'Mail' && 'Connect your email account to view messages'}
                                                     {activePage === 'Telegram' && !telegramConnected && 'Click "Connect Telegram" to view messages'}
-                                                    {activePage === 'Telegram' && telegramConnected && 'Loading your Telegram chats...'}
-                                                    {activePage === 'Inbox' && 'No messages from any platform yet'}
                                                 </p>
                                             </div>
                                         )}
                                     </>
                                 )}
-
                             </div>
                         </div>
                     ) : (
-                        <div className="flex h-full flex-col items-center justify-center">
-                            <h1 className="mb-4 text-4xl font-bold text-gray-800">{activePage}</h1>
-                            <div className="rounded-lg bg-blue-100 px-6 py-3 text-blue-700">
-                                <span className="font-semibold">Coming Soon</span>
+                        /* New Gmail-like UI for Mail & Inbox */
+                        <div className="flex bg-white h-[calc(100vh-8rem)] rounded-xl overflow-hidden shadow-sm border border-gray-200">
+                            {/* Left Sidebar */}
+                            <div className="w-64 flex flex-col p-4 border-r border-gray-100 hidden md:flex bg-cyan-50/30">
+                                <button
+                                    onClick={() => {
+                                        setComposeData({ to: '', subject: '', body: '' });
+                                        setIsComposeOpen(true);
+                                    }}
+                                    className="flex items-center gap-3 bg-white text-gray-700 font-medium py-4 px-6 rounded-2xl shadow hover:shadow-md transition-all mb-6 w-fit border border-gray-100"
+                                >
+                                    <Pencil size={18} />
+                                    <span>Compose</span>
+                                </button>
+
+                                <nav className="space-y-1 flex-1 overflow-y-auto">
+                                    <MailSidebarItem icon={<Inbox size={18} />} label="Inbox" count={messages.length} active={mailFolder === 'inbox'} onClick={() => setMailFolder('inbox')} />
+                                    <MailSidebarItem icon={<Star size={18} />} label="Starred" active={mailFolder === 'starred'} onClick={() => setMailFolder('starred')} />
+                                    <MailSidebarItem icon={<Clock size={18} />} label="Snoozed" active={mailFolder === 'snoozed'} onClick={() => setMailFolder('snoozed')} />
+                                    <MailSidebarItem icon={<Send size={18} />} label="Sent" active={mailFolder === 'sent'} onClick={() => setMailFolder('sent')} />
+                                    <MailSidebarItem icon={<File size={18} />} label="Drafts" count={52} active={mailFolder === 'drafts'} onClick={() => setMailFolder('drafts')} />
+                                    <MailSidebarItem icon={<Package size={18} />} label="Purchases" count={27} active={mailFolder === 'purchases'} onClick={() => setMailFolder('purchases')} />
+                                    <MailSidebarItem icon={<ChevronDown size={18} />} label="More" active={false} onClick={() => { }} />
+                                </nav>
+
+                                <div className="mt-4 pt-4 border-t border-gray-200">
+                                    <div className="flex items-center justify-between px-3 mb-2">
+                                        <span className="text-base font-medium text-gray-700">Labels</span>
+                                        <button className="text-gray-500 hover:text-gray-700"><Plus size={18} /></button>
+                                    </div>
+                                </div>
                             </div>
-                            <p className="mt-4 text-gray-500">We are working hard to bring you this feature.</p>
+
+                            {/* Main Content */}
+                            <div className="flex-1 flex flex-col min-w-0 bg-white">
+                                {/* Tabs */}
+                                <div className="flex items-center border-b border-gray-200 bg-white px-2">
+                                    <MailTab icon={<Inbox size={18} />} label="Primary" active={mailTab === 'Primary'} onClick={() => { setMailTab('Primary'); localStorage.setItem('mailTab', 'Primary'); }} color="blue" />
+                                    <MailTab icon={<Tag size={18} />} label="Promotions" active={mailTab === 'Promotions'} onClick={() => { setMailTab('Promotions'); localStorage.setItem('mailTab', 'Promotions'); }} badge="2 new" color="green" />
+                                    <MailTab icon={<Users size={18} />} label="Social" active={mailTab === 'Social'} onClick={() => { setMailTab('Social'); localStorage.setItem('mailTab', 'Social'); }} badge="1 new" color="blue" />
+                                    <MailTab icon={<AlertCircle size={18} />} label="Updates" active={mailTab === 'Updates'} onClick={() => { setMailTab('Updates'); localStorage.setItem('mailTab', 'Updates'); }} badge="1 new" color="orange" />
+                                </div>
+
+                                {/* Controls Bar */}
+                                <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-gray-50/50">
+                                    <div className="flex items-center gap-2">
+                                        <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                                        <button onClick={fetchEmails} className="p-2 text-gray-500 hover:bg-gray-200 rounded-full" title="Refresh">
+                                            <RefreshCw size={18} className={loadingMessages ? 'animate-spin' : ''} />
+                                        </button>
+                                        <button className="p-2 text-gray-500 hover:bg-gray-200 rounded-full" title="Mark as read">
+                                            <Mail size={18} />
+                                        </button>
+                                    </div>
+                                    <div className="text-xs text-gray-500">
+                                        1-{Math.min(50, messages.length)} of {messages.length}
+                                    </div>
+                                </div>
+
+                                {/* Message List */}
+                                <div className="flex-1 overflow-y-auto">
+                                    {loadingMessages ? (
+                                        <div className="p-12 text-center text-gray-500">Loading your emails...</div>
+                                    ) : (
+                                        messages
+                                            .filter(m => (activePage === 'Inbox' || m.source === activePage) && connectedPlatforms[m.source])
+                                            .length === 0 ? (
+                                            <div className="p-12 text-center text-gray-500">
+                                                <div className="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                                                    <Inbox size={32} className="text-gray-400" />
+                                                </div>
+                                                <p>Your inbox is empty</p>
+                                            </div>
+                                        ) : (
+                                            messages
+                                                .filter(m => (activePage === 'Inbox' || m.source === activePage) && connectedPlatforms[m.source])
+                                                .map((message) => (
+                                                    <div
+                                                        key={message.id}
+                                                        className={`group flex items-center px-4 py-3 border-b border-gray-100 hover:shadow-md hover:z-10 bg-white cursor-pointer transition-all relative ${!message.read ? 'bg-white' : 'bg-gray-50/30'}`}
+                                                        onClick={() => {
+                                                            setSelectedMessage(message);
+                                                            // Mark as read locally
+                                                            setMessages(prev => prev.map(m =>
+                                                                m.id === message.id ? { ...m, read: true } : m
+                                                            ));
+                                                        }}
+                                                    >
+                                                        {/* Checkbox & Star */}
+                                                        <div className="flex items-center gap-3 mr-4 text-gray-400 flex-shrink-0">
+                                                            <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" onClick={(e) => e.stopPropagation()} />
+                                                            <Star size={18} className="hover:text-yellow-400 cursor-pointer" onClick={(e) => { e.stopPropagation(); /* toggle star */ }} />
+                                                        </div>
+
+                                                        {/* Sender */}
+                                                        <div className={`w-48 font-semibold text-gray-900 truncate mr-4 ${!message.read ? 'font-bold' : 'font-normal'}`}>
+                                                            {message.sender}
+                                                        </div>
+
+                                                        {/* Subject/Preview */}
+                                                        <div className="flex-1 min-w-0 flex items-center text-sm text-gray-600">
+                                                            <span className={`text-gray-900 mr-2 ${!message.read ? 'font-bold' : 'font-medium'}`}>
+                                                                {message.subject || '(No Subject)'}
+                                                            </span>
+                                                            <span className="text-gray-400 truncate hidden sm:block">- {message.preview}</span>
+                                                        </div>
+
+                                                        {/* Date */}
+                                                        <div className={`text-xs text-gray-500 whitespace-nowrap ml-4 w-16 text-right ${!message.read ? 'font-bold text-gray-900' : ''}`}>
+                                                            {message.time}
+                                                        </div>
+
+                                                        {/* Actions (hover) */}
+                                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-1 bg-white pl-2 shadow-sm rounded-l-lg border-l border-gray-100">
+                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Archive"><Archive size={16} /></button>
+                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Delete"><Trash2 size={16} /></button>
+                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Mark as unread"><Mail size={16} /></button>
+                                                        </div>
+                                                    </div>
+                                                ))
+                                        )
+                                    )}
+                                </div>
+                            </div>
                         </div>
                     )
-                    }
-                </main >
+                ) : (
+                    <div className="flex h-full flex-col items-center justify-center">
+                        <h1 className="mb-4 text-4xl font-bold text-gray-800">{activePage}</h1>
+                        <div className="rounded-lg bg-blue-100 px-6 py-3 text-blue-700">
+                            <span className="font-semibold">Coming Soon</span>
+                        </div>
+                        <p className="mt-4 text-gray-500">We are working hard to bring you this feature.</p>
+                    </div>
+                )
+                }
+            </main >
 
-                {/* Message Detail Modal */}
-                {
-                    selectedMessage && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedMessage(null)}>
-                            <div className="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-xl bg-white shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
-                                {/* Modal Header */}
-                                <div className="flex items-center justify-between border-b border-gray-100 p-6">
-                                    <div className="flex items-center space-x-4">
-                                        <div className={`flex h-12 w-12 items-center justify-center rounded-full text-white font-bold text-xl
+            {/* Message Detail Modal */}
+            {
+                selectedMessage && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedMessage(null)}>
+                        <div className="w-full max-w-5xl max-h-[90vh] overflow-hidden rounded-xl bg-white shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
+                            {/* Modal Header */}
+                            <div className="flex items-center justify-between border-b border-gray-100 p-6">
+                                <div className="flex items-center space-x-4">
+                                    <div className={`flex h-12 w-12 items-center justify-center rounded-full text-white font-bold text-xl
                                         ${selectedMessage.source === 'Whatsapp' ? 'bg-green-500' :
-                                                selectedMessage.source === 'Telegram' ? 'bg-blue-400' : 'bg-red-500'}`}>
-                                            {selectedMessage.source[0]}
-                                        </div>
-                                        <div>
-                                            <h3 className="text-lg font-bold text-gray-900">{selectedMessage.sender}</h3>
-                                            <p className="text-sm text-gray-500">{selectedMessage.time} • {selectedMessage.source}</p>
-                                        </div>
+                                            selectedMessage.source === 'Telegram' ? 'bg-blue-400' : 'bg-red-500'}`}>
+                                        {selectedMessage.source[0]}
                                     </div>
+                                    <div>
+                                        <h3 className="text-lg font-bold text-gray-900">{selectedMessage.sender}</h3>
+                                        <p className="text-sm text-gray-500">{selectedMessage.time} • {selectedMessage.source}</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    {/* AI Draft Controls in Modal Header */}
+                                    <div className="flex gap-2 mr-2">
+                                        {drafts[selectedMessage.id] && (
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleOpenReview(selectedMessage);
+                                                }}
+                                                className="text-xs bg-blue-100 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-200 transition-colors flex items-center gap-1 font-medium"
+                                            >
+                                                <FileText size={14} /> Review
+                                            </button>
+                                        )}
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleQuickDraft(selectedMessage);
+                                            }}
+                                            disabled={loadingDrafts[selectedMessage.id]}
+                                            className="text-xs bg-purple-100 text-purple-700 px-3 py-2 rounded-lg hover:bg-purple-200 disabled:opacity-50 transition-colors font-medium flex items-center gap-1"
+                                        >
+                                            <Sparkles size={14} />
+                                            {loadingDrafts[selectedMessage.id] ? 'Generating...' : drafts[selectedMessage.id] ? 'Regenerate' : 'Generate'}
+                                        </button>
+                                    </div>
+
                                     <button
                                         onClick={() => setSelectedMessage(null)}
                                         className="rounded-full p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
@@ -1047,136 +1070,145 @@ const Dashboard = () => {
                                         <ChevronDown className="rotate-180" size={24} />
                                     </button>
                                 </div>
+                            </div>
 
-                                {/* Modal Content */}
-                                <div className="flex-1 overflow-y-auto p-6">
-                                    <h4 className="mb-4 text-xl font-semibold text-gray-800">{selectedMessage.subject}</h4>
-                                    {selectedMessage.source === 'Mail' && selectedMessage.body ? (
-                                        <div
-                                            className="prose prose-sm max-w-none text-gray-700"
-                                            dangerouslySetInnerHTML={{ __html: selectedMessage.body }}
+                            {/* Modal Content */}
+                            <div className="flex-1 overflow-y-auto p-6">
+                                <h4 className="mb-4 text-xl font-semibold text-gray-800">{selectedMessage.subject}</h4>
+                                {selectedMessage.source === 'Mail' && selectedMessage.body ? (
+                                    <div
+                                        className="prose prose-sm max-w-none text-gray-700"
+                                        dangerouslySetInnerHTML={{ __html: selectedMessage.body }}
+                                    />
+                                ) : (
+                                    <p className="text-gray-700 whitespace-pre-wrap">{selectedMessage.preview}</p>
+                                )}
+
+                                {/* Telegram Reply Input */}
+                                {selectedTelegramChat && selectedTelegramChat.id === selectedMessage.id && (
+                                    <div className="mt-6 border-t pt-4">
+                                        <h5 className="text-sm font-medium text-gray-700 mb-2">Reply to {selectedMessage.sender}</h5>
+                                        <textarea
+                                            value={replyText}
+                                            onChange={(e) => setReplyText(e.target.value)}
+                                            placeholder="Type your reply..."
+                                            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                                            rows="3"
+                                            autoFocus
                                         />
-                                    ) : (
-                                        <p className="text-gray-700 whitespace-pre-wrap">{selectedMessage.preview}</p>
-                                    )}
-
-                                    {/* Telegram Reply Input */}
-                                    {selectedTelegramChat && selectedTelegramChat.id === selectedMessage.id && (
-                                        <div className="mt-6 border-t pt-4">
-                                            <h5 className="text-sm font-medium text-gray-700 mb-2">Reply to {selectedMessage.sender}</h5>
-                                            <textarea
-                                                value={replyText}
-                                                onChange={(e) => setReplyText(e.target.value)}
-                                                placeholder="Type your reply..."
-                                                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                                                rows="3"
-                                                autoFocus
-                                            />
-                                            <div className="flex justify-end mt-3 space-x-2">
-                                                <button
-                                                    onClick={() => {
-                                                        setSelectedTelegramChat(null);
-                                                        setReplyText('');
-                                                    }}
-                                                    className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors"
-                                                >
-                                                    Cancel
-                                                </button>
-                                                <button
-                                                    onClick={handleSendTelegramReply}
-                                                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors flex items-center space-x-1"
-                                                >
-                                                    <span>Send Reply</span>
-                                                </button>
-                                            </div>
+                                        <div className="flex justify-end mt-3 space-x-2">
+                                            <button
+                                                onClick={() => {
+                                                    setSelectedTelegramChat(null);
+                                                    setReplyText('');
+                                                }}
+                                                className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors"
+                                            >
+                                                Cancel
+                                            </button>
+                                            <button
+                                                onClick={handleSendTelegramReply}
+                                                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors flex items-center space-x-1"
+                                            >
+                                                <span>Send Reply</span>
+                                            </button>
                                         </div>
-                                    )}
-                                </div>
-
-                                {/* Modal Footer - Hide if replying via Telegram */}
-                                {(!selectedTelegramChat || selectedTelegramChat.id !== selectedMessage.id) && (
-                                    <div className="border-t border-gray-100 p-4 bg-gray-50 flex justify-end space-x-2">
-                                        <button onClick={() => setSelectedMessage(null)} className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800">
-                                            Close
-                                        </button>
-                                        <button onClick={() => handleReply(selectedMessage)} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700">
-                                            Reply
-                                        </button>
                                     </div>
                                 )}
                             </div>
-                        </div>
-                    )
-                }
 
-                {/* Compose Email Modal */}
-                {
-                    isComposeOpen && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsComposeOpen(false)}>
-                            <div className="w-full max-w-2xl rounded-xl bg-white shadow-2xl flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
-                                {/* Modal Header */}
-                                <div className="flex items-center justify-between border-b border-gray-100 p-6">
-                                    <h3 className="text-lg font-bold text-gray-900">Compose Email</h3>
+                            {/* Modal Footer - Hide if replying via Telegram */}
+                            {(!selectedTelegramChat || selectedTelegramChat.id !== selectedMessage.id) && (
+                                <div className="border-t border-gray-100 p-4 bg-gray-50 flex justify-end space-x-2">
+                                    <button onClick={() => setSelectedMessage(null)} className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800">
+                                        Close
+                                    </button>
+                                    <button onClick={() => handleReply(selectedMessage)} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700">
+                                        Reply
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )
+            }
+
+            {/* Compose Email Modal */}
+            {
+                isComposeOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsComposeOpen(false)}>
+                        <div className="w-full max-w-2xl rounded-xl bg-white shadow-2xl flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+                            {/* Modal Header */}
+                            <div className="flex items-center justify-between border-b border-gray-100 p-6">
+                                <h3 className="text-lg font-bold text-gray-900">Compose Email</h3>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={() => handleAIAssistant()}
+                                        className="rounded-full p-2 text-purple-600 bg-purple-50 hover:bg-purple-100 hover:text-purple-700 transition-colors"
+                                        title="Draft with AI"
+                                    >
+                                        <Sparkles size={20} />
+                                    </button>
                                     <button
                                         onClick={() => setIsComposeOpen(false)}
                                         className="rounded-full p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
                                     >
-                                        <ChevronDown className="rotate-180" size={24} />
-                                    </button>
-                                </div>
-
-                                {/* Modal Content */}
-                                <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700 mb-2">To</label>
-                                        <input
-                                            type="email"
-                                            value={composeData.to}
-                                            onChange={(e) => setComposeData({ ...composeData, to: e.target.value })}
-                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                            placeholder="recipient@example.com"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700 mb-2">Subject</label>
-                                        <input
-                                            type="text"
-                                            value={composeData.subject}
-                                            onChange={(e) => setComposeData({ ...composeData, subject: e.target.value })}
-                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                            placeholder="Email subject"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700 mb-2">Message</label>
-                                        <textarea
-                                            value={composeData.body}
-                                            onChange={(e) => setComposeData({ ...composeData, body: e.target.value })}
-                                            rows={10}
-                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                                            placeholder="Write your message..."
-                                        />
-                                    </div>
-                                </div>
-
-                                {/* Modal Footer */}
-                                <div className="border-t border-gray-100 p-4 bg-gray-50 flex justify-end space-x-2">
-                                    <button onClick={() => setIsComposeOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800">
-                                        Cancel
-                                    </button>
-                                    <button
-                                        onClick={sendEmail}
-                                        disabled={sendingEmail}
-                                        className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {sendingEmail ? 'Sending...' : 'Send'}
+                                        <X size={24} />
                                     </button>
                                 </div>
                             </div>
+
+                            {/* Modal Content */}
+                            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">To</label>
+                                    <input
+                                        type="email"
+                                        value={composeData.to}
+                                        onChange={(e) => setComposeData({ ...composeData, to: e.target.value })}
+                                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        placeholder="recipient@example.com"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">Subject</label>
+                                    <input
+                                        type="text"
+                                        value={composeData.subject}
+                                        onChange={(e) => setComposeData({ ...composeData, subject: e.target.value })}
+                                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        placeholder="Email subject"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">Message</label>
+                                    <textarea
+                                        value={composeData.body}
+                                        onChange={(e) => setComposeData({ ...composeData, body: e.target.value })}
+                                        rows={10}
+                                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                                        placeholder="Write your message..."
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Modal Footer */}
+                            <div className="border-t border-gray-100 p-4 bg-gray-50 flex justify-end space-x-2">
+                                <button onClick={() => setIsComposeOpen(false)} className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800">
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={sendEmail}
+                                    disabled={sendingEmail}
+                                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {sendingEmail ? 'Sending...' : 'Send'}
+                                </button>
+                            </div>
                         </div>
-                    )
-                }
-            </div >
+                    </div>
+                )
+            }
 
             {/* AI Prompt Modal */}
             < AIPromptModal
@@ -1210,6 +1242,22 @@ const Dashboard = () => {
                 onSuccess={handleTelegramAuthSuccess}
             />
 
+            {/* Mobile Compose FAB for Mail View */}
+            {
+                (activePage === 'Mail' || activePage === 'Inbox') && (
+                    <button
+                        onClick={() => {
+                            setComposeData({ to: '', subject: '', body: '' });
+                            setIsComposeOpen(true);
+                        }}
+                        className="md:hidden fixed bottom-24 right-6 p-4 bg-white text-gray-700 rounded-full shadow-xl hover:bg-gray-50 transition-all z-50 border border-gray-200"
+                        title="Compose Email"
+                    >
+                        <Pencil size={24} className="text-gray-600" />
+                    </button>
+                )
+            }
+
             {/* AI Chat FAB */}
             <button
                 onClick={() => setIsAIChatOpen(!isAIChatOpen)}
@@ -1219,63 +1267,65 @@ const Dashboard = () => {
             </button>
 
             {/* Gmail Warning Modal */}
-            {isGmailWarningOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsGmailWarningOpen(false)}>
-                    <div className="w-full max-w-md rounded-xl bg-white shadow-2xl p-6" onClick={e => e.stopPropagation()}>
-                        <h3 className="text-lg font-bold text-gray-900 mb-4">Connecting Gmail</h3>
+            {
+                isGmailWarningOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setIsGmailWarningOpen(false)}>
+                        <div className="w-full max-w-md rounded-xl bg-white shadow-2xl p-6" onClick={e => e.stopPropagation()}>
+                            <h3 className="text-lg font-bold text-gray-900 mb-4">Connecting Gmail</h3>
 
-                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
-                            <h4 className="text-sm font-semibold text-yellow-800 mb-2">Important: Verification Required</h4>
-                            <p className="text-sm text-yellow-700 mb-2">
-                                You might see an <strong>"Access blocked"</strong> error from Google. This is normal during testing.
-                            </p>
-                            <ul className="list-disc list-inside text-sm text-yellow-700 space-y-1">
-                                <li>The app is in "Testing" mode.</li>
-                                <li>Your email must be added to the <strong>Test Users</strong> list by the developer.</li>
-                            </ul>
-                        </div>
+                            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+                                <h4 className="text-sm font-semibold text-yellow-800 mb-2">Important: Verification Required</h4>
+                                <p className="text-sm text-yellow-700 mb-2">
+                                    You might see an <strong>"Access blocked"</strong> error from Google. This is normal during testing.
+                                </p>
+                                <ul className="list-disc list-inside text-sm text-yellow-700 space-y-1">
+                                    <li>The app is in "Testing" mode.</li>
+                                    <li>Your email must be added to the <strong>Test Users</strong> list by the developer.</li>
+                                </ul>
+                            </div>
 
-                        <div className="mb-6 flex items-start space-x-3">
-                            <input
-                                type="checkbox"
-                                id="readWarning"
-                                checked={hasReadWarning}
-                                onChange={(e) => setHasReadWarning(e.target.checked)}
-                                className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                            />
-                            <label htmlFor="readWarning" className="text-sm text-gray-600">
-                                I have read the above and confirmed that my email is added to the Test Users list.
-                            </label>
-                        </div>
+                            <div className="mb-6 flex items-start space-x-3">
+                                <input
+                                    type="checkbox"
+                                    id="readWarning"
+                                    checked={hasReadWarning}
+                                    onChange={(e) => setHasReadWarning(e.target.checked)}
+                                    className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                />
+                                <label htmlFor="readWarning" className="text-sm text-gray-600">
+                                    I have read the above and confirmed that my email is added to the Test Users list.
+                                </label>
+                            </div>
 
-                        <div className="flex justify-end space-x-3">
-                            <button
-                                onClick={() => {
-                                    setIsGmailWarningOpen(false);
-                                    setHasReadWarning(false);
-                                }}
-                                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={() => {
-                                    window.location.href = 'http://localhost:5000/auth/google';
-                                    setIsGmailWarningOpen(false);
-                                    setHasReadWarning(false);
-                                }}
-                                disabled={!hasReadWarning}
-                                className={`px-4 py-2 rounded-lg transition-colors text-white ${hasReadWarning
-                                    ? 'bg-blue-600 hover:bg-blue-700'
-                                    : 'bg-gray-300 cursor-not-allowed'
-                                    }`}
-                            >
-                                I Understand, Proceed
-                            </button>
+                            <div className="flex justify-end space-x-3">
+                                <button
+                                    onClick={() => {
+                                        setIsGmailWarningOpen(false);
+                                        setHasReadWarning(false);
+                                    }}
+                                    className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        window.location.href = 'http://localhost:5000/auth/google';
+                                        setIsGmailWarningOpen(false);
+                                        setHasReadWarning(false);
+                                    }}
+                                    disabled={!hasReadWarning}
+                                    className={`px-4 py-2 rounded-lg transition-colors text-white ${hasReadWarning
+                                        ? 'bg-blue-600 hover:bg-blue-700'
+                                        : 'bg-gray-300 cursor-not-allowed'
+                                        }`}
+                                >
+                                    I Understand, Proceed
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             {/* AI Chat Window */}
             {
@@ -1332,14 +1382,7 @@ const Dashboard = () => {
                     </div>
                 )
             }
-            {reviewDraft && (
-                <DraftPreview
-                    draft={reviewDraft}
-                    onClose={() => setReviewDraft(null)}
-                    onSend={handleSendReviewedDraft}
-                    onImprove={handleImproveDraft}
-                />
-            )}
+
         </div >
     );
 };
@@ -1379,19 +1422,22 @@ const DropdownItem = ({ icon, label, onClick }) => (
     </button>
 );
 
-const StatCard = ({ title, value, icon, change }) => (
+const StatCard = ({ title, value, change, isPositive }) => (
     <div className="rounded-xl bg-white p-6 shadow-sm border border-gray-100 flex flex-col justify-between h-32 hover:shadow-md transition-shadow">
         <div className="flex justify-between items-start">
             <p className="text-sm font-medium text-gray-500">{title}</p>
-            <div className="p-2 bg-gray-50 rounded-lg text-gray-600">
-                {icon}
-            </div>
         </div>
         <div className="flex items-end justify-between">
             <h4 className="text-2xl font-bold text-gray-900">{value}</h4>
-            {change && <span className="text-xs text-green-500">{change}</span>}
+            {change && (
+                <span className={`text-xs font-medium ${isPositive ? 'text-green-500' : 'text-red-500'}`}>
+                    {change}
+                </span>
+            )}
         </div>
     </div>
 );
+
+
 
 export default Dashboard;
