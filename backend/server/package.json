@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "axios": "^1.13.2",
     "cors": "^2.8.5",
     "crypto-js": "^4.2.0",
     "dotenv": "^16.3.1",
@@ -17,7 +18,9 @@
     "groq-sdk": "^0.36.0",
     "input": "^1.0.1",
     "mongoose": "^7.8.7",
-    "telegram": "^2.26.22"
+    "qrcode-terminal": "^0.12.0",
+    "telegram": "^2.26.22",
+    "whatsapp-web.js": "^1.34.4"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

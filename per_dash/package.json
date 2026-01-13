@@ -13,6 +13,7 @@
     "@tailwindcss/vite": "^4.1.17",
     "firebase": "^12.6.0",
     "lucide-react": "^0.554.0",
+    "qrcode": "^1.5.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.9.6",

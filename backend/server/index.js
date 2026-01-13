@@ -7,9 +7,11 @@ const { google } = require('googleapis');
 const { getAuthUrl, getAndSaveToken, getGmailClient, oauth2Client } = require('./gmailService');
 const { generateEmailDraft, summarizeEmail, improveDraft, chatWithAI, testConnection } = require('./services/aiService');
 const telegramService = require('./services/telegramService');
+const whatsappService = require('./services/whatsappService');
 const EmailDraft = require('./models/EmailDraft');
 const AIInteraction = require('./models/AIInteraction');
 const TelegramSession = require('./models/TelegramSession');
+const WhatsAppSession = require('./models/WhatsAppSession');
 const { connectDB, isDBConnected } = require('./config/database');
 
 // Connect to MongoDB (will warn if not configured)
@@ -792,14 +794,492 @@ app.get('/api/platforms/status', async (req, res) => {
         telegramConnected = false;
     }
 
-    // Check WhatsApp (Mock for now as implementation is pending)
-    const whatsappConnected = false; 
+    // Check WhatsApp
+    let whatsappConnected = false;
+    try {
+        const whatsappSession = await WhatsAppSession.findOne({ userId, isActive: true });
+        whatsappConnected = !!whatsappSession;
+    } catch (e) {
+        console.error("Error checking WhatsApp status:", e);
+        whatsappConnected = false;
+    }
 
     res.json({
         Mail: gmailConnected,
         Telegram: telegramConnected,
         Whatsapp: whatsappConnected
     });
+});
+
+// --- WhatsApp Web Routes ---
+
+// 19. Initialize WhatsApp Connection (Get QR Code)
+app.post('/api/whatsapp/auth/start', async (req, res) => {
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    try {
+        console.log(`📱 Starting WhatsApp auth for user: ${userId}`);
+        
+        // Initialize WhatsApp client
+        const result = await whatsappService.getQRCode();
+        
+        if (result.ready) {
+            return res.json({
+                success: true,
+                message: "WhatsApp already connected",
+                connected: true
+            });
+        }
+
+        if (result.qr) {
+            return res.json({
+                success: true,
+                qr: result.qr,
+                message: "Scan this QR code with WhatsApp"
+            });
+        }
+
+        // If neither, still initializing
+        res.json({
+            success: true,
+            message: "Initializing WhatsApp client...",
+            initializing: true
+        });
+
+    } catch (error) {
+        console.error("Error starting WhatsApp auth:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 20. Check WhatsApp Connection Status
+app.get('/api/whatsapp/status', async (req, res) => {
+    try {
+        const status = await whatsappService.getStatus();
+        res.json(status);
+    } catch (error) {
+        console.error("Error checking WhatsApp status:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 21. Get WhatsApp Chats
+app.get('/api/whatsapp/chats', async (req, res) => {
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    try {
+        console.log(`📱 Fetching WhatsApp chats for user: ${userId}`);
+        const chats = await whatsappService.getChats();
+        
+        console.log(`✅ Fetched ${chats.length} WhatsApp chats`);
+        res.json({ chats });
+
+    } catch (error) {
+        console.error("Error fetching WhatsApp chats:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 22. Send WhatsApp Message
+app.post('/api/whatsapp/send', async (req, res) => {
+    const { chatId, message } = req.body;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    if (!chatId || !message) {
+        return res.status(400).json({ error: "chatId and message are required" });
+    }
+
+    try {
+        const result = await whatsappService.sendMessage(chatId, message);
+        res.json(result);
+
+    } catch (error) {
+        console.error("Error sending WhatsApp message:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 23. Disconnect WhatsApp
+app.post('/api/platforms/disconnect/Whatsapp', async (req, res) => {
+    try {
+        await whatsappService.disconnect();
+        res.json({ success: true, message: "WhatsApp disconnected" });
+    } catch (error) {
+        console.error("Error disconnecting WhatsApp:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+
+// --- WhatsApp Business API Routes ---
+
+// 20. Webhook Verification (GET) - Required by Meta
+app.get('/api/whatsapp/webhook', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'my_verify_token_123';
+
+    if (mode === 'subscribe' && token === verifyToken) {
+        console.log('✅ WhatsApp webhook verified');
+        res.status(200).send(challenge);
+    } else {
+        console.error('❌ WhatsApp webhook verification failed');
+        res.sendStatus(403);
+    }
+});
+
+// 21. Webhook Handler (POST) - Receive incoming messages
+app.post('/api/whatsapp/webhook', async (req, res) => {
+    try {
+        // Verify signature for security
+        const signature = req.headers['x-hub-signature-256'];
+        const rawBody = JSON.stringify(req.body);
+        
+        // Respond quickly to Meta (required)
+        res.sendStatus(200);
+
+        // Process webhook asynchronously
+        const parsedMessage = whatsappService.parseWebhookMessage(req.body);
+        
+        if (!parsedMessage) {
+            console.log('⚠️ No message data in webhook');
+            return;
+        }
+
+        console.log('📨 WhatsApp webhook received:', parsedMessage);
+
+        // Handle incoming message
+        if (parsedMessage.type === 'message') {
+            // Find the user's WhatsApp session
+            const session = await WhatsAppSession.findOne({ isActive: true });
+            
+            if (session) {
+                // Update conversation
+                session.updateConversation(
+                    parsedMessage.from,
+                    parsedMessage.from,
+                    parsedMessage.contactName,
+                    parsedMessage.text
+                );
+
+                // Add to message history
+                session.addMessage(parsedMessage.from, {
+                    id: parsedMessage.messageId,
+                    from: parsedMessage.from,
+                    to: session.phoneNumberId,
+                    text: parsedMessage.text,
+                    timestamp: new Date(parseInt(parsedMessage.timestamp) * 1000),
+                    status: 'received',
+                    type: parsedMessage.messageType
+                });
+
+                await session.save();
+                console.log('✅ Message saved to database');
+
+                // Mark as read
+                await whatsappService.markMessageAsRead(
+                    parsedMessage.messageId,
+                    session.getDecryptedToken()
+                );
+            }
+        }
+
+        // Handle status updates
+        if (parsedMessage.type === 'status') {
+            console.log('📊 Message status update:', parsedMessage.status);
+            // Update message status in database if needed
+        }
+
+    } catch (error) {
+        console.error('Error processing WhatsApp webhook:', error);
+        // Don't send error to Meta - already responded with 200
+    }
+});
+
+// 22. Connect WhatsApp - Save credentials and test connection
+app.post('/api/whatsapp/connect', async (req, res) => {
+    const { accessToken, phoneNumberId, businessAccountId } = req.body;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    if (!accessToken || !phoneNumberId || !businessAccountId) {
+        return res.status(400).json({ 
+            error: 'Missing required fields: accessToken, phoneNumberId, businessAccountId' 
+        });
+    }
+
+    try {
+        // Test the connection first
+        const testResult = await whatsappService.testConnection(accessToken, phoneNumberId);
+
+        if (!testResult.success) {
+            return res.status(400).json({ 
+                error: 'Connection test failed', 
+                details: testResult.error 
+            });
+        }
+
+        // Save or update session
+        const session = await WhatsAppSession.findOneAndUpdate(
+            { userId },
+            {
+                userId,
+                phoneNumberId,
+                businessAccountId,
+                displayPhoneNumber: testResult.phoneNumber,
+                accessToken, // Will be encrypted by pre-save hook
+                isActive: true,
+                lastSync: new Date(),
+                metadata: {
+                    verifiedName: testResult.verifiedName,
+                    qualityRating: testResult.qualityRating
+                }
+            },
+            { upsert: true, new: true }
+        );
+
+        console.log('✅ WhatsApp connected successfully for user:', userId);
+
+        res.json({
+            success: true,
+            message: 'WhatsApp connected successfully',
+            phoneNumber: testResult.phoneNumber,
+            verifiedName: testResult.verifiedName,
+            qualityRating: testResult.qualityRating
+        });
+
+    } catch (error) {
+        console.error('Error connecting WhatsApp:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 23. Check WhatsApp Connection Status
+app.get('/api/whatsapp/status', async (req, res) => {
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    try {
+        const session = await WhatsAppSession.findOne({ userId, isActive: true });
+
+        if (!session) {
+            return res.json({
+                connected: false,
+                phoneNumber: null,
+                lastSync: null
+            });
+        }
+
+        res.json({
+            connected: true,
+            phoneNumber: session.displayPhoneNumber,
+            verifiedName: session.metadata?.verifiedName,
+            qualityRating: session.metadata?.qualityRating,
+            lastSync: session.lastSync,
+            conversationCount: session.conversations.length
+        });
+
+    } catch (error) {
+        console.error('Error checking WhatsApp status:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 24. Get WhatsApp Conversations
+app.get('/api/whatsapp/conversations', async (req, res) => {
+    const userId = req.headers['x-user-id'] || 'anonymous';
+    const limit = parseInt(req.query.limit) || 50;
+
+    try {
+        const session = await WhatsAppSession.findOne({ userId, isActive: true });
+
+        if (!session) {
+            return res.status(401).json({ error: 'WhatsApp not connected' });
+        }
+
+        // Sort conversations by last message time
+        const conversations = session.conversations
+            .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime))
+            .slice(0, limit)
+            .map(conv => ({
+                id: conv.chatId,
+                chatId: conv.chatId,
+                title: conv.contactName,
+                phoneNumber: conv.contactPhone,
+                message: {
+                    text: conv.lastMessage,
+                    date: conv.lastMessageTime
+                },
+                unreadCount: conv.unreadCount
+            }));
+
+        res.json({ 
+            success: true,
+            conversations 
+        });
+
+    } catch (error) {
+        console.error('Error fetching WhatsApp conversations:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 25. Get Messages from a Conversation
+app.get('/api/whatsapp/messages/:phoneNumber', async (req, res) => {
+    const { phoneNumber } = req.params;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+    const limit = parseInt(req.query.limit) || 50;
+
+    try {
+        const session = await WhatsAppSession.findOne({ userId, isActive: true });
+
+        if (!session) {
+            return res.status(401).json({ error: 'WhatsApp not connected' });
+        }
+
+        const conversation = session.conversations.find(c => c.chatId === phoneNumber);
+
+        if (!conversation) {
+            return res.json({ messages: [] });
+        }
+
+        const messages = conversation.messageHistory
+            .slice(-limit)
+            .map(msg => ({
+                id: msg.messageId,
+                from: msg.from,
+                to: msg.to,
+                text: msg.text,
+                timestamp: msg.timestamp,
+                status: msg.status,
+                type: msg.type
+            }));
+
+        res.json({ messages });
+
+    } catch (error) {
+        console.error('Error fetching WhatsApp messages:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 26. Send WhatsApp Message
+app.post('/api/whatsapp/send', async (req, res) => {
+    const { to, message } = req.body;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    if (!to || !message) {
+        return res.status(400).json({ error: 'Missing required fields: to, message' });
+    }
+
+    try {
+        const session = await WhatsAppSession.findOne({ userId, isActive: true });
+
+        if (!session) {
+            return res.status(401).json({ error: 'WhatsApp not connected' });
+        }
+
+        const accessToken = session.getDecryptedToken();
+
+        // Send message
+        const result = await whatsappService.sendMessage(to, message, accessToken);
+
+        if (!result.success) {
+            return res.status(400).json({ error: result.error, details: result.details });
+        }
+
+        // Update conversation in database
+        session.updateConversation(to, to, to, message);
+        session.addMessage(to, {
+            id: result.messageId,
+            from: session.phoneNumberId,
+            to: to,
+            text: message,
+            timestamp: new Date(),
+            status: 'sent',
+            type: 'text'
+        });
+
+        await session.save();
+
+        res.json({
+            success: true,
+            messageId: result.messageId,
+            message: 'Message sent successfully'
+        });
+
+    } catch (error) {
+        console.error('Error sending WhatsApp message:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 27. Send WhatsApp Template Message
+app.post('/api/whatsapp/send-template', async (req, res) => {
+    const { to, templateName, languageCode, components } = req.body;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    if (!to || !templateName) {
+        return res.status(400).json({ error: 'Missing required fields: to, templateName' });
+    }
+
+    try {
+        const session = await WhatsAppSession.findOne({ userId, isActive: true });
+
+        if (!session) {
+            return res.status(401).json({ error: 'WhatsApp not connected' });
+        }
+
+        const accessToken = session.getDecryptedToken();
+
+        // Send template message
+        const result = await whatsappService.sendTemplateMessage(
+            to,
+            templateName,
+            languageCode || 'en',
+            components || [],
+            accessToken
+        );
+
+        if (!result.success) {
+            return res.status(400).json({ error: result.error, details: result.details });
+        }
+
+        res.json({
+            success: true,
+            messageId: result.messageId,
+            message: 'Template message sent successfully'
+        });
+
+    } catch (error) {
+        console.error('Error sending WhatsApp template:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 28. Get Message Templates
+app.get('/api/whatsapp/templates', async (req, res) => {
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    try {
+        const session = await WhatsAppSession.findOne({ userId, isActive: true });
+
+        if (!session) {
+            return res.status(401).json({ error: 'WhatsApp not connected' });
+        }
+
+        const accessToken = session.getDecryptedToken();
+        const result = await whatsappService.getMessageTemplates(
+            accessToken,
+            session.businessAccountId
+        );
+
+        res.json(result);
+
+    } catch (error) {
+        console.error('Error fetching templates:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // 19. Disconnect Platform
@@ -830,6 +1310,9 @@ app.post('/api/platforms/disconnect/:platform', async (req, res) => {
             // Also disconnect the active client if it exists in memory
             // (This would require exposing a disconnect method in telegramService, but for now DB removal is enough for persistent state)
             res.json({ success: true, message: 'Telegram disconnected' });
+        } else if (platform === 'Whatsapp') {
+            await WhatsAppSession.deleteOne({ userId, isActive: true });
+            res.json({ success: true, message: 'WhatsApp disconnected' });
         } else {
             res.status(400).json({ error: 'Unknown platform' });
         }

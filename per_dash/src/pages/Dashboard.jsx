@@ -43,6 +43,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import AIPromptModal from '../components/AIPromptModal';
 import DraftPreview from '../components/DraftPreview';
 import TelegramAuthModal from '../components/TelegramAuthModal';
+import WhatsAppAuthModal from '../components/WhatsAppAuthModal';
 import PlatformSelector from '../components/PlatformSelector';
 import Connectors from '../components/Connectors';
 import Overview from '../components/Overview';
@@ -188,7 +189,7 @@ const Dashboard = () => {
             } else if (platformId === 'Telegram') {
                 setIsTelegramAuthOpen(true);
             } else if (platformId === 'Whatsapp') {
-                alert("WhatsApp integration is coming soon!");
+                setIsWhatsAppConnectOpen(true);
             }
         }
     };
@@ -277,6 +278,11 @@ const Dashboard = () => {
     const [selectedPlatform, setSelectedPlatform] = useState('all');
     const [selectedTelegramChat, setSelectedTelegramChat] = useState(null);
     const [replyText, setReplyText] = useState('');
+
+    // WhatsApp States
+    const [isWhatsAppConnectOpen, setIsWhatsAppConnectOpen] = useState(false);
+    const [whatsappConnected, setWhatsappConnected] = useState(false);
+    const [whatsappConversations, setWhatsappConversations] = useState([]);
 
     // AI Chat State
     const [isAIChatOpen, setIsAIChatOpen] = useState(false);
@@ -606,6 +612,94 @@ const Dashboard = () => {
         fetchPlatformStatus(); // Update connectors status
     };
 
+    // WhatsApp Functions
+    const checkWhatsAppConnection = async () => {
+        try {
+            const response = await fetch('http://localhost:5000/api/whatsapp/status');
+            const data = await response.json();
+            setWhatsappConnected(data.connected);
+            if (data.connected) {
+                fetchWhatsAppConversations();
+            }
+        } catch (error) {
+            console.error('Error checking WhatsApp status:', error);
+        }
+    };
+
+    const fetchWhatsAppConversations = async () => {
+        try {
+            const response = await fetch('http://localhost:5000/api/whatsapp/conversations');
+            if (response.ok) {
+                const data = await response.json();
+                setWhatsappConversations(data.conversations || []);
+
+                // Convert WhatsApp conversations to message format and add to messages
+                const whatsappMessages = (data.conversations || []).map(conv => ({
+                    id: `whatsapp_${conv.chatId}`,
+                    chatId: conv.chatId,
+                    source: 'Whatsapp',
+                    sender: conv.title,
+                    preview: conv.message?.text || 'No messages yet',
+                    time: conv.message?.date ? new Date(conv.message.date).toLocaleTimeString('en-US', {
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true
+                    }) : '',
+                    subject: '',
+                    body: conv.message?.text || '',
+                    unreadCount: conv.unreadCount || 0,
+                    phoneNumber: conv.phoneNumber
+                }));
+
+                // Merge with existing messages, removing old WhatsApp messages first
+                setMessages(prev => [
+                    ...prev.filter(m => m.source !== 'Whatsapp'),
+                    ...whatsappMessages
+                ]);
+            }
+        } catch (error) {
+            console.error('Error fetching WhatsApp conversations:', error);
+        }
+    };
+
+    const handleWhatsAppConnect = (connectionResult) => {
+        setWhatsappConnected(true);
+        fetchWhatsAppConversations();
+        fetchPlatformStatus(); // Update connectors status
+        alert(`WhatsApp connected successfully!\nPhone: ${connectionResult.phoneNumber}`);
+    };
+
+    const handleSendWhatsAppMessage = async (phoneNumber, message) => {
+        try {
+            const response = await fetch('http://localhost:5000/api/whatsapp/send', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-user-id': user?.uid || 'anonymous'
+                },
+                body: JSON.stringify({
+                    to: phoneNumber,
+                    message: message
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to send WhatsApp message');
+            }
+
+            const data = await response.json();
+            console.log('WhatsApp message sent:', data);
+
+            // Refresh conversations
+            fetchWhatsAppConversations();
+
+            return { success: true };
+        } catch (error) {
+            console.error('Error sending WhatsApp message:', error);
+            return { success: false, error: error.message };
+        }
+    };
+
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
             if (currentUser) {
@@ -622,6 +716,7 @@ const Dashboard = () => {
         if (user) {
             fetchEmails();
             checkTelegramConnection();
+            checkWhatsAppConnection();
         }
     }, [user]);
 
@@ -630,6 +725,12 @@ const Dashboard = () => {
             fetchTelegramChats();
         }
     }, [telegramConnected]);
+
+    useEffect(() => {
+        if (whatsappConnected) {
+            fetchWhatsAppConversations();
+        }
+    }, [whatsappConnected]);
 
     const handleSignOut = async () => {
         try {
@@ -1242,6 +1343,13 @@ const Dashboard = () => {
                 onSuccess={handleTelegramAuthSuccess}
             />
 
+            {/* WhatsApp Connect Modal */}
+            <WhatsAppConnectModal
+                isOpen={isWhatsAppConnectOpen}
+                onClose={() => setIsWhatsAppConnectOpen(false)}
+                onConnect={handleWhatsAppConnect}
+            />
+
             {/* Mobile Compose FAB for Mail View */}
             {
                 (activePage === 'Mail' || activePage === 'Inbox') && (
@@ -1326,6 +1434,18 @@ const Dashboard = () => {
                     </div>
                 )
             }
+
+            {/* WhatsApp Auth Modal */}
+            <WhatsAppAuthModal
+                isOpen={isWhatsAppConnectOpen}
+                onClose={() => setIsWhatsAppConnectOpen(false)}
+                onSuccess={() => {
+                    setWhatsappConnected(true);
+                    setConnectedPlatforms(prev => ({ ...prev, Whatsapp: true }));
+                    fetchPlatformStatus();
+                }}
+            />
+
 
             {/* AI Chat Window */}
             {
