@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     Home,
     Inbox,
@@ -34,7 +34,8 @@ import {
     Plus,
     AlertCircle,
     Trash2,
-    Archive
+    Archive,
+    Lock
 } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { auth } from '../firebase';
@@ -114,13 +115,13 @@ const Dashboard = () => {
     });
     const [visibleNavItems, setVisibleNavItems] = useState(() => {
         const savedItems = localStorage.getItem('visibleNavItems');
-        return savedItems ? JSON.parse(savedItems) : ['Dashboard', 'Inbox', 'Whatsapp'];
+        return savedItems ? JSON.parse(savedItems) : ['Dashboard', 'Mail', 'Whatsapp'];
     }); // Default visible items
     const [isNavCustomizeOpen, setIsNavCustomizeOpen] = useState(false);
 
     const allNavItems = [
         { id: 'Dashboard', label: 'Overview' },
-        { id: 'Inbox', label: 'Mail' },
+        { id: 'Mail', label: 'Mail' },
         { id: 'Whatsapp', label: 'Whatsapp' },
         { id: 'Telegram', label: 'Telegram' }
     ];
@@ -278,15 +279,32 @@ const Dashboard = () => {
     const [selectedPlatform, setSelectedPlatform] = useState('all');
     const [selectedTelegramChat, setSelectedTelegramChat] = useState(null);
     const [replyText, setReplyText] = useState('');
+    const [telegramError, setTelegramError] = useState(null);
 
     // WhatsApp States
     const [isWhatsAppConnectOpen, setIsWhatsAppConnectOpen] = useState(false);
     const [whatsappConnected, setWhatsappConnected] = useState(false);
     const [whatsappConversations, setWhatsappConversations] = useState([]);
+    const [whatsappMessages, setWhatsappMessages] = useState([]);
+    const [loadingWhatsAppMessages, setLoadingWhatsAppMessages] = useState(false);
+    const [whatsappError, setWhatsappError] = useState(null);
+    const messagesEndRef = useRef(null);
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    };
+
+    useEffect(() => {
+        if (activePage === 'Whatsapp' && whatsappMessages.length > 0) {
+            scrollToBottom();
+        }
+    }, [whatsappMessages, activePage]);
+
+
 
     // AI Chat State
     const [isAIChatOpen, setIsAIChatOpen] = useState(false);
-    const [aiChatMessages, setAIChatMessages] = useState([{ role: 'system', content: 'Hello! I am your personal dashboard assistant. How can I help you today?' }]);
+    const [aiChatMessages, setAIChatMessages] = useState([{ role: 'system', content: 'Hello! I am your Crivo Inai assistant. How can I help you today?' }]);
     const [aiChatInput, setAIChatInput] = useState('');
     const [isAiThinking, setIsAiThinking] = useState(false);
 
@@ -351,6 +369,19 @@ const Dashboard = () => {
         }
     }, [activePage, telegramConnected]);
 
+    useEffect(() => {
+        // Check WhatsApp connection on mount
+        checkWhatsAppConnection();
+    }, []);
+
+    useEffect(() => {
+        // Fetch WhatsApp chats when on Whatsapp page
+        if (activePage === 'Whatsapp' && whatsappConnected) {
+            fetchWhatsAppConversations();
+        }
+    }, [activePage, whatsappConnected]);
+
+
     const sendEmail = async () => {
         if (!composeData.to || !composeData.subject) {
             alert('Please fill in recipient and subject fields');
@@ -385,6 +416,9 @@ const Dashboard = () => {
         if (message.source === 'Telegram') {
             setSelectedTelegramChat(message);
             // Don't close the modal, just show reply input
+        } else if (message.source === 'Whatsapp') {
+            // For WhatsApp, just select the message to show in right panel
+            setSelectedMessage(message);
         } else {
             // Default to Mail behavior
             const recipientEmail = message.sender.match(/<(.+?)>/)?.[1] || message.sender;
@@ -573,9 +607,13 @@ const Dashboard = () => {
 
     const fetchTelegramChats = async () => {
         try {
+            console.log('Fetching Telegram chats...');
             const response = await fetch('http://localhost:5000/api/telegram/chats');
+            console.log('Telegram fetch status:', response.status);
+
             if (response.ok) {
                 const data = await response.json();
+                console.log('Telegram chats raw data:', data);
                 setTelegramChats(data.chats || []);
 
                 // Convert Telegram chats to message format and add to messages
@@ -585,7 +623,7 @@ const Dashboard = () => {
                     source: 'Telegram',
                     sender: chat.title,
                     preview: chat.message?.text || 'No messages yet',
-                    time: chat.message?.date ? new Date(chat.message.date * 1000).toLocaleTimeString('en-US', {
+                    time: chat.date ? new Date(chat.date * 1000).toLocaleTimeString('en-US', {
                         hour: 'numeric',
                         minute: '2-digit',
                         hour12: true
@@ -595,14 +633,27 @@ const Dashboard = () => {
                     unreadCount: chat.unreadCount
                 }));
 
+                console.log(`✅ Setting ${telegramMessages.length} Telegram messages`);
+
                 // Merge with existing messages, removing old Telegram messages first
                 setMessages(prev => [
                     ...prev.filter(m => m.source !== 'Telegram'),
                     ...telegramMessages
                 ]);
+                setTelegramError(null);
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                console.error(`❌ Telegram fetch status: ${response.status}`, errorData);
+
+                if (errorData.error?.includes('SESSION_PASSWORD_NEEDED')) {
+                    setTelegramError('2FA_REQUIRED');
+                } else {
+                    setTelegramError('FETCH_ERROR');
+                }
             }
         } catch (error) {
-            console.error('Error fetching Telegram chats:', error);
+            console.error('❌ Error fetching Telegram chats:', error);
+            setTelegramError('NETWORK_ERROR');
         }
     };
 
@@ -628,27 +679,28 @@ const Dashboard = () => {
 
     const fetchWhatsAppConversations = async () => {
         try {
-            const response = await fetch('http://localhost:5000/api/whatsapp/conversations');
+            const response = await fetch('http://localhost:5000/api/whatsapp/chats');
             if (response.ok) {
                 const data = await response.json();
-                setWhatsappConversations(data.conversations || []);
+                const chats = data.chats || [];
+                setWhatsappConversations(chats);
 
-                // Convert WhatsApp conversations to message format and add to messages
-                const whatsappMessages = (data.conversations || []).map(conv => ({
-                    id: `whatsapp_${conv.chatId}`,
-                    chatId: conv.chatId,
+                // Convert WhatsApp chats to message format and add to messages
+                const whatsappMessages = chats.map(chat => ({
+                    id: `whatsapp_${chat.id}`,
+                    chatId: chat.id,
                     source: 'Whatsapp',
-                    sender: conv.title,
-                    preview: conv.message?.text || 'No messages yet',
-                    time: conv.message?.date ? new Date(conv.message.date).toLocaleTimeString('en-US', {
+                    sender: chat.name,
+                    preview: chat.lastMessage?.body || 'No messages yet',
+                    time: chat.lastMessage?.timestamp ? new Date(chat.lastMessage.timestamp * 1000).toLocaleTimeString('en-US', {
                         hour: 'numeric',
                         minute: '2-digit',
                         hour12: true
                     }) : '',
                     subject: '',
-                    body: conv.message?.text || '',
-                    unreadCount: conv.unreadCount || 0,
-                    phoneNumber: conv.phoneNumber
+                    body: chat.lastMessage?.body || '',
+                    unreadCount: chat.unreadCount || 0,
+                    isGroup: chat.isGroup
                 }));
 
                 // Merge with existing messages, removing old WhatsApp messages first
@@ -656,9 +708,16 @@ const Dashboard = () => {
                     ...prev.filter(m => m.source !== 'Whatsapp'),
                     ...whatsappMessages
                 ]);
+                setWhatsappError(null);
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                console.error('❌ WhatsApp fetch error:', errorData);
+                setWhatsappError(errorData.error || 'Failed to fetch conversations');
+                setWhatsappConversations([]);
             }
         } catch (error) {
             console.error('Error fetching WhatsApp conversations:', error);
+            setWhatsappError('Network error. Please check if backend is running.');
         }
     };
 
@@ -721,16 +780,16 @@ const Dashboard = () => {
     }, [user]);
 
     useEffect(() => {
-        if (telegramConnected) {
+        if (telegramConnected && (activePage === 'Telegram' || activePage === 'Dashboard')) {
             fetchTelegramChats();
         }
-    }, [telegramConnected]);
+    }, [telegramConnected, activePage]);
 
     useEffect(() => {
-        if (whatsappConnected) {
+        if (whatsappConnected && (activePage === 'Whatsapp' || activePage === 'Dashboard')) {
             fetchWhatsAppConversations();
         }
-    }, [whatsappConnected]);
+    }, [whatsappConnected, activePage]);
 
     const handleSignOut = async () => {
         try {
@@ -744,7 +803,7 @@ const Dashboard = () => {
     const handleNavClick = (page) => {
         setActivePage(page);
         localStorage.setItem('activePage', page);
-        if (page !== 'Inbox' && !['Whatsapp', 'Mail', 'Telegram'].includes(page)) {
+        if (page !== 'Mail' && !['Whatsapp', 'Telegram'].includes(page)) {
             setIsProfileOpen(false);
         }
         // On mobile, close sidebar when navigating
@@ -776,7 +835,7 @@ const Dashboard = () => {
                 {/* Left: Logo */}
                 <div className="flex items-center space-x-2 w-48">
                     <img src="/assets/clogo.jpg" alt="Logo" className="h-8 w-8 rounded-full" />
-                    <span className="text-xl font-bold text-gray-800">Crivo's PA</span>
+                    <span className="text-xl font-bold text-gray-800">Crivo Inai</span>
                 </div>
 
                 {/* Center: Navigation Pills */}
@@ -786,7 +845,7 @@ const Dashboard = () => {
                         <button
                             key={item.id}
                             onClick={() => handleNavClick(item.id)}
-                            className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${(activePage === item.id) || (item.id === 'Inbox' && activePage === 'Mail')
+                            className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${activePage === item.id
                                 ? 'border-2 border-indigo-500 text-indigo-900 bg-white'
                                 : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
                                 }`}
@@ -828,13 +887,13 @@ const Dashboard = () => {
                                         <div key={item.id} className="flex items-center justify-between p-2 hover:bg-gray-50 rounded-lg cursor-pointer" onClick={() => handleNavToggle(item.id)}>
                                             <div className="flex items-center gap-3">
                                                 <div className={`w-8 h-8 rounded-full flex items-center justify-center ${item.id === 'Dashboard' ? 'bg-purple-100 text-purple-600' :
-                                                    item.id === 'Inbox' ? 'bg-blue-100 text-blue-600' :
+                                                    item.id === 'Mail' ? 'bg-blue-100 text-blue-600' :
                                                         item.id === 'Whatsapp' ? 'bg-green-100 text-green-600' :
                                                             item.id === 'Telegram' ? 'bg-sky-100 text-sky-600' :
                                                                 'bg-orange-100 text-orange-600'
                                                     }`}>
                                                     {item.id === 'Dashboard' ? <LayoutDashboard size={16} /> :
-                                                        item.id === 'Inbox' ? <Mail size={16} /> :
+                                                        item.id === 'Mail' ? <Mail size={16} /> :
                                                             item.id === 'Whatsapp' ? <MessageSquare size={16} /> :
                                                                 item.id === 'Telegram' ? <Send size={16} /> :
                                                                     <RefreshCw size={16} />}
@@ -902,84 +961,453 @@ const Dashboard = () => {
                     <Connectors connectedPlatforms={connectedPlatforms} togglePlatform={togglePlatform} />
                 ) : activePage === 'Dashboard' ? (
                     <Overview messages={messages} connectedPlatforms={connectedPlatforms} user={user} />
-                ) : ['Inbox', 'Whatsapp', 'Mail', 'Telegram'].includes(activePage) ? (
-                    (activePage === 'Whatsapp' || activePage === 'Telegram') ? (
-                        /* Original Layout for Chat Apps */
-                        <div className="space-y-6">
-                            <div className="flex items-center justify-between">
-                                <h1 className="text-2xl font-bold text-gray-800">{activePage} Messages</h1>
-                                <div className="flex items-center space-x-4">
-                                    {activePage === 'Telegram' && !telegramConnected && (
+                ) : ['Mail', 'Inbox', 'Whatsapp', 'Telegram'].includes(activePage) ? (
+                    activePage === 'Whatsapp' ? (
+                        !connectedPlatforms['Whatsapp'] || !whatsappConnected ? (
+                            <div className="flex flex-col items-center justify-center p-12 h-[calc(100vh-8rem)] text-center bg-white rounded-xl border border-gray-200 shadow-sm">
+                                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-6">
+                                    <MessageSquare size={32} className="text-green-600" />
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-900 mb-2">WhatsApp Not Connected</h3>
+                                <p className="text-gray-500 mb-6 max-w-sm">Connect your WhatsApp Business account to view your chats and send messages directly from the dashboard.</p>
+                                <button
+                                    onClick={() => togglePlatform('Whatsapp')}
+                                    className="bg-green-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-green-700 transition-colors"
+                                >
+                                    Connect WhatsApp
+                                </button>
+                            </div>
+                        ) : (
+                            /* WhatsApp Web-like UI */
+                            <div className="flex bg-[#f0f2f5] h-[calc(100vh-8rem)] rounded-xl overflow-hidden shadow-sm">
+                                {/* Left: Chat List */}
+                                <div className="w-full md:w-[400px] bg-white border-r border-gray-200 flex flex-col">
+                                    {/* Header */}
+                                    <div className="bg-[#008069] p-4 flex items-center justify-between">
+                                        <h2 className="text-white font-semibold text-lg flex items-center gap-2">
+                                            <MessageSquare size={24} />
+                                            WhatsApp
+                                        </h2>
                                         <button
-                                            onClick={() => setIsTelegramAuthOpen(true)}
-                                            className="px-4 py-2 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-lg hover:from-blue-700 hover:to-cyan-700 transition-all text-sm font-medium flex items-center space-x-2 shadow-md"
-                                        >
-                                            <MessageSquare size={16} />
-                                            <span>Connect Telegram</span>
-                                        </button>
-                                    )}
-                                    {activePage === 'Telegram' && telegramConnected && (
-                                        <button
-                                            onClick={fetchTelegramChats}
-                                            className="p-2 text-gray-500 hover:text-blue-600 transition-colors rounded-full hover:bg-blue-50"
-                                            title="Refresh Telegram Chats"
+                                            onClick={fetchWhatsAppConversations}
+                                            className="p-2 text-white hover:bg-white/10 rounded-full transition-colors"
+                                            title="Refresh"
                                         >
                                             <RefreshCw size={20} />
                                         </button>
-                                    )}
-                                </div>
-                            </div>
-                            <div className="rounded-xl bg-white shadow-sm overflow-hidden">
-                                {loadingMessages ? (
-                                    <div className="p-8 text-center text-gray-500">Loading messages...</div>
-                                ) : (
-                                    <>
-                                        {messages
-                                            .filter(m => m.source === activePage)
-                                            .map((message) => (
-                                                <div key={message.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
-                                                    <div className="flex flex-col md:flex-row">
-                                                        <div
-                                                            className="flex-1 p-4 cursor-pointer border-r border-gray-100"
-                                                            onClick={() => {
-                                                                setSelectedMessage(message);
-                                                                if (message.source === 'Telegram') setSelectedTelegramChat(message);
-                                                            }}
-                                                        >
-                                                            <div className="flex items-center space-x-4">
-                                                                <div className={`flex h-10 w-10 items-center justify-center rounded-full text-white font-bold flex-shrink-0
-                                                                    ${message.source === 'Whatsapp' ? 'bg-green-500' : 'bg-blue-400'}`}>
-                                                                    {message.source[0]}
-                                                                </div>
-                                                                <div className="min-w-0 flex-1">
-                                                                    <div className="flex items-center justify-between mb-1">
-                                                                        <h4 className="font-semibold text-gray-900 truncate">{message.sender}</h4>
-                                                                        <span className="text-xs text-gray-400 whitespace-nowrap ml-2">{message.time}</span>
-                                                                    </div>
-                                                                    <p className="text-sm text-gray-600 line-clamp-1 font-medium">{message.subject || message.preview}</p>
-                                                                    <p className="text-xs text-gray-400 line-clamp-2">{message.preview}</p>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
+                                    </div>
+
+                                    {/* Search Bar */}
+                                    <div className="p-2 bg-white border-b border-gray-200">
+                                        <div className="relative">
+                                            <input
+                                                type="text"
+                                                placeholder="Search or start new chat"
+                                                className="w-full pl-12 pr-4 py-2 bg-[#f0f2f5] rounded-lg text-sm focus:outline-none"
+                                            />
+                                            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">
+                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                                                    <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" fill="currentColor" />
+                                                </svg>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Chat List */}
+                                    <div className="flex-1 overflow-y-auto">
+                                        {loadingMessages ? (
+                                            <div className="p-8 text-center text-gray-500">Loading chats...</div>
+                                        ) : whatsappError ? (
+                                            <div className="p-12 text-center">
+                                                <div className="mx-auto w-16 h-16 rounded-full bg-red-50 flex items-center justify-center mb-4">
+                                                    <AlertCircle className="text-red-500" size={32} />
                                                 </div>
-                                            ))}
-                                        {messages.filter(m => m.source === activePage).length === 0 && (
+                                                <h3 className="text-lg font-semibold text-gray-700 mb-2">Connection Issue</h3>
+                                                <p className="text-sm text-gray-500 mb-6">{whatsappError}</p>
+                                                <button
+                                                    onClick={fetchWhatsAppConversations}
+                                                    className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+                                                >
+                                                    Retry Connection
+                                                </button>
+                                            </div>
+                                        ) : messages.filter(m => m.source === 'Whatsapp').length === 0 ? (
                                             <div className="p-12 text-center">
                                                 <div className="mx-auto w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-4">
                                                     <MessageSquare className="text-gray-400" size={32} />
                                                 </div>
-                                                <h3 className="text-lg font-semibold text-gray-700 mb-2">{activePage} Not Connected</h3>
-                                                <p className="text-sm text-gray-500">
-                                                    {activePage === 'Whatsapp' && 'Connect your WhatsApp account to view messages'}
-                                                    {activePage === 'Telegram' && !telegramConnected && 'Click "Connect Telegram" to view messages'}
-                                                </p>
+                                                <h3 className="text-lg font-semibold text-gray-700 mb-2">No Chats Yet</h3>
+                                                <p className="text-sm text-gray-500">Your WhatsApp chats will appear here</p>
                                             </div>
+                                        ) : (
+                                            messages
+                                                .filter(m => m.source === 'Whatsapp')
+                                                .map((chat) => (
+                                                    <div
+                                                        key={chat.id}
+                                                        onClick={async (e) => {
+                                                            e.stopPropagation();
+                                                            console.log('Clicked chat object:', chat);
+                                                            setSelectedMessage(chat);
+                                                            setLoadingWhatsAppMessages(true);
+
+                                                            const targetId = chat.chatId || chat.id;
+                                                            console.log('Target Chat ID for API:', targetId);
+
+                                                            // Fetch full chat history
+                                                            try {
+                                                                const url = `http://localhost:5000/api/whatsapp/messages/${encodeURIComponent(targetId)}?limit=50`;
+                                                                console.log('Fetching URL:', url);
+
+                                                                const response = await fetch(url, {
+                                                                    headers: {
+                                                                        'x-user-id': user?.uid || 'anonymous'
+                                                                    }
+                                                                });
+
+                                                                console.log('Response status:', response.status);
+
+                                                                if (response.ok) {
+                                                                    const data = await response.json();
+                                                                    console.log('Received WhatsApp messages payload:', data);
+
+                                                                    if (data.messages && Array.isArray(data.messages)) {
+                                                                        console.log(`Setting ${data.messages.length} messages`);
+                                                                        setWhatsappMessages(data.messages);
+                                                                    } else {
+                                                                        console.warn('Data.messages is missing or not an array', data);
+                                                                        setWhatsappMessages([]);
+                                                                    }
+                                                                } else {
+                                                                    const errorText = await response.text();
+                                                                    console.error('Failed to fetch messages. Status:', response.status, 'Error:', errorText);
+                                                                    // Use fallback if API fails
+                                                                    if (chat.preview) {
+                                                                        console.log('Using fallback preview');
+                                                                        setWhatsappMessages([{
+                                                                            body: chat.preview,
+                                                                            fromMe: false, // We don't know for sure, assume false for preview
+                                                                            timestamp: chat.time
+                                                                        }]);
+                                                                    } else {
+                                                                        setWhatsappMessages([]);
+                                                                    }
+                                                                }
+                                                            } catch (error) {
+                                                                console.error('Error in fetch execution:', error);
+                                                                // Fallback
+                                                                if (chat.preview) {
+                                                                    setWhatsappMessages([{
+                                                                        body: chat.preview,
+                                                                        fromMe: false,
+                                                                        timestamp: chat.time
+                                                                    }]);
+                                                                } else {
+                                                                    setWhatsappMessages([]);
+                                                                }
+                                                            } finally {
+                                                                setLoadingWhatsAppMessages(false);
+                                                            }
+                                                        }}
+                                                        className={`flex items-center p-3 cursor-pointer hover:bg-[#f5f6f6] border-b border-gray-100 transition-colors ${selectedMessage?.id === chat.id ? 'bg-[#f0f2f5]' : 'bg-white'
+                                                            }`}
+                                                    >
+                                                        {/* Avatar */}
+                                                        <div className="flex-shrink-0 mr-3">
+                                                            <div className="w-12 h-12 rounded-full bg-gray-300 flex items-center justify-center text-white font-semibold text-lg">
+                                                                {chat.isGroup ? (
+                                                                    <Users size={24} />
+                                                                ) : (
+                                                                    chat.sender[0].toUpperCase()
+                                                                )}
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Chat Info */}
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="flex items-center justify-between mb-1">
+                                                                <h3 className="font-semibold text-gray-900 truncate">{chat.sender}</h3>
+                                                                <span className="text-xs text-gray-500 ml-2">{chat.time}</span>
+                                                            </div>
+                                                            <div className="flex items-center justify-between">
+                                                                <p className="text-sm text-gray-600 truncate flex-1">{chat.preview}</p>
+                                                                {chat.unreadCount > 0 && (
+                                                                    <span className="ml-2 bg-[#25d366] text-white text-xs rounded-full px-2 py-0.5 font-semibold">
+                                                                        {chat.unreadCount}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ))
                                         )}
-                                    </>
-                                )}
+                                    </div>
+                                </div>
+
+                                {/* Right: Chat View */}
+                                <div className="flex-1 flex flex-col bg-[#efeae2]" style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'100\' height=\'100\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M0 0h100v100H0z\' fill=\'%23efeae2\'/%3E%3Cpath d=\'M10 10h20v20H10zM40 10h20v20H40zM70 10h20v20H70zM10 40h20v20H10zM40 40h20v20H40zM70 40h20v20H70zM10 70h20v20H10zM40 70h20v20H40zM70 70h20v20H70z\' fill=\'%23dfd8cc\' opacity=\'.05\'/%3E%3C/svg%3E")' }}>
+                                    {selectedMessage ? (
+                                        <>
+                                            {/* Chat Header */}
+                                            <div className="bg-[#f0f2f5] p-3 flex items-center justify-between border-b border-gray-200">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="w-10 h-10 rounded-full bg-gray-300 flex items-center justify-center text-white font-semibold">
+                                                        {selectedMessage.isGroup ? <Users size={20} /> : selectedMessage.sender[0].toUpperCase()}
+                                                    </div>
+                                                    <div>
+                                                        <h3 className="font-semibold text-gray-900">{selectedMessage.sender}</h3>
+                                                        <p className="text-xs text-gray-500">Click here for contact info</p>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <button className="p-2 text-gray-600 hover:bg-gray-200 rounded-full">
+                                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                                                            <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+                                                        </svg>
+                                                    </button>
+                                                    <button className="p-2 text-gray-600 hover:bg-gray-200 rounded-full">
+                                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                                                            <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {/* Messages Area */}
+                                            <div className="flex-1 overflow-y-auto p-4">
+                                                <div className="max-w-4xl mx-auto space-y-2">
+                                                    {loadingWhatsAppMessages ? (
+                                                        <div className="text-center text-gray-500 py-8">
+                                                            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-[#008069]"></div>
+                                                            <p className="mt-2">Loading messages...</p>
+                                                        </div>
+                                                    ) : whatsappMessages.length === 0 ? (
+                                                        <div className="text-center text-gray-500 py-8">
+                                                            <p>No messages yet</p>
+                                                            <p className="text-sm mt-2">Start the conversation!</p>
+                                                        </div>
+                                                    ) : (
+                                                        whatsappMessages.map((msg, idx) => (
+                                                            <div key={idx} className={`flex ${msg.fromMe ? 'justify-end' : 'justify-start'}`}>
+                                                                <div className={`rounded-lg p-3 shadow-sm max-w-[65%] ${msg.fromMe
+                                                                    ? 'bg-[#d9fdd3]'
+                                                                    : 'bg-white'
+                                                                    }`}>
+                                                                    <p className="text-sm text-gray-800">{msg.body}</p>
+                                                                    <span className="text-xs text-gray-500 mt-1 block">
+                                                                        {msg.timestamp ? new Date(msg.timestamp * 1000).toLocaleTimeString('en-US', {
+                                                                            hour: 'numeric',
+                                                                            minute: '2-digit',
+                                                                            hour12: true
+                                                                        }) : 'Now'}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                        ))
+                                                    )}
+                                                    <div ref={messagesEndRef} />
+                                                </div>
+                                            </div>
+
+                                            {/* Message Input */}
+                                            <div className="bg-[#f0f2f5] p-3 flex items-center gap-2">
+                                                <button className="p-2 text-gray-600 hover:bg-gray-200 rounded-full">
+                                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                                                        <path d="M9.153 11.603c.795 0 1.439-.879 1.439-1.962s-.644-1.962-1.439-1.962-1.439.879-1.439 1.962.644 1.962 1.439 1.962zm-3.204 1.362c-.026-.307-.131 5.218 6.063 5.551 6.066-.25 6.066-5.551 6.066-5.551-6.078 1.416-12.129 0-12.129 0zm11.363 1.108s-.669 1.959-5.051 1.959c-3.505 0-5.388-1.164-5.607-1.959 0 0 5.912 1.055 10.658 0zM11.804 1.011C5.609 1.011.978 6.033.978 12.228s4.826 10.761 11.021 10.761S23.02 18.423 23.02 12.228c.001-6.195-5.021-11.217-11.216-11.217zM12 21.354c-5.273 0-9.381-3.886-9.381-9.159s3.942-9.548 9.215-9.548 9.548 4.275 9.548 9.548c-.001 5.272-4.109 9.159-9.382 9.159zm3.108-9.751c.795 0 1.439-.879 1.439-1.962s-.644-1.962-1.439-1.962-1.439.879-1.439 1.962.644 1.962 1.439 1.962z" />
+                                                    </svg>
+                                                </button>
+                                                <button className="p-2 text-gray-600 hover:bg-gray-200 rounded-full">
+                                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                                                        <path d="M1.816 15.556v.002c0 1.502.584 2.912 1.646 3.972s2.472 1.647 3.974 1.647a5.58 5.58 0 003.972-1.645l9.547-9.548c.769-.768 1.147-1.767 1.058-2.817-.079-.968-.548-1.927-1.319-2.698-1.594-1.592-4.068-1.711-5.517-.262l-7.916 7.915c-.881.881-.792 2.25.214 3.261.959.958 2.423 1.053 3.263.215l5.511-5.512c.28-.28.267-.722.053-.936l-.244-.244c-.191-.191-.567-.349-.957.04l-5.506 5.506c-.18.18-.635.127-.976-.214-.098-.097-.576-.613-.213-.973l7.915-7.917c.818-.817 2.267-.699 3.23.262.5.501.802 1.1.849 1.685.051.573-.156 1.111-.589 1.543l-9.547 9.549a3.97 3.97 0 01-2.829 1.171 3.975 3.975 0 01-2.83-1.173 3.973 3.973 0 01-1.172-2.828c0-1.071.415-2.076 1.172-2.83l7.209-7.211c.157-.157.264-.579.028-.814L11.5 4.36a.572.572 0 00-.834.018l-7.205 7.207a5.577 5.577 0 00-1.645 3.971z" />
+                                                    </svg>
+                                                </button>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Type a message"
+                                                    value={replyText}
+                                                    onChange={(e) => setReplyText(e.target.value)}
+                                                    onKeyPress={(e) => {
+                                                        if (e.key === 'Enter' && replyText.trim() && selectedMessage) {
+                                                            e.preventDefault();
+                                                            document.querySelector('button[class*="bg-[#008069]"]').click();
+                                                        }
+                                                    }}
+                                                    className="flex-1 px-4 py-2 rounded-lg bg-white focus:outline-none"
+                                                />
+                                                <button
+                                                    onClick={async () => {
+                                                        if (replyText.trim() && selectedMessage) {
+                                                            const messageText = replyText;
+
+                                                            // Optimistic update - add message immediately to UI
+                                                            const optimisticMessage = {
+                                                                body: messageText,
+                                                                fromMe: true,
+                                                                timestamp: Math.floor(Date.now() / 1000)
+                                                            };
+                                                            setWhatsappMessages(prev => [...prev, optimisticMessage]);
+                                                            setReplyText('');
+
+                                                            try {
+                                                                const response = await fetch('http://localhost:5000/api/whatsapp/send', {
+                                                                    method: 'POST',
+                                                                    headers: {
+                                                                        'Content-Type': 'application/json',
+                                                                        'x-user-id': user?.uid || 'anonymous'
+                                                                    },
+                                                                    body: JSON.stringify({
+                                                                        chatId: selectedMessage.chatId,
+                                                                        message: messageText
+                                                                    })
+                                                                });
+
+                                                                if (response.ok) {
+                                                                    // Optionally refresh chats to show new message
+                                                                    fetchWhatsAppConversations();
+                                                                } else {
+                                                                    alert('Failed to send message');
+                                                                    // Remove optimistic message on failure
+                                                                    setWhatsappMessages(prev => prev.filter(m => m !== optimisticMessage));
+                                                                }
+                                                            } catch (error) {
+                                                                console.error('Error sending WhatsApp message:', error);
+                                                                alert('Failed to send message');
+                                                                // Remove optimistic message on error
+                                                                setWhatsappMessages(prev => prev.filter(m => m !== optimisticMessage));
+                                                            }
+                                                        }
+                                                    }}
+                                                    className="p-2 bg-[#008069] text-white rounded-full hover:bg-[#017561] transition-colors"
+                                                >
+                                                    <Send size={20} />
+                                                </button>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <div className="flex-1 flex items-center justify-center">
+                                            <div className="text-center">
+                                                <div className="mx-auto w-64 h-64 mb-8 opacity-20">
+                                                    <svg viewBox="0 0 303 172" fill="none">
+                                                        <path d="M151.5 0C67.9 0 0 67.9 0 151.5S67.9 303 151.5 303 303 235.1 303 151.5 235.1 0 151.5 0zm0 276C82.4 276 27 220.6 27 151.5S82.4 27 151.5 27 276 82.4 276 151.5 220.6 276 151.5 276z" fill="currentColor" />
+                                                    </svg>
+                                                </div>
+                                                <h3 className="text-2xl font-light text-gray-600 mb-2">WhatsApp Web</h3>
+                                                <p className="text-sm text-gray-500">Select a chat to start messaging</p>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
                             </div>
-                        </div>
+                        )
+                    ) : activePage === 'Telegram' ? (
+                        !connectedPlatforms['Telegram'] || !telegramConnected ? (
+                            <div className="flex flex-col items-center justify-center p-12 h-screen text-center bg-white rounded-xl border border-gray-200 shadow-sm">
+                                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+                                    <Send size={32} className="text-blue-600" />
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-900 mb-2">Telegram Not Connected</h3>
+                                <p className="text-gray-500 mb-6 max-w-sm">Connect your Telegram account to view your messages and reply directly from the dashboard.</p>
+                                <button
+                                    onClick={() => togglePlatform('Telegram')}
+                                    className="bg-sky-500 text-white px-6 py-2 rounded-lg font-medium hover:bg-sky-600 transition-colors"
+                                >
+                                    Connect Telegram
+                                </button>
+                            </div>
+                        ) : telegramError === '2FA_REQUIRED' ? (
+                            <div className="flex flex-col items-center justify-center p-12 h-screen text-center bg-white rounded-xl border border-gray-200 shadow-sm">
+                                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+                                    <Lock size={32} className="text-blue-600" />
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-900 mb-2">2FA Password Needed</h3>
+                                <p className="text-gray-500 mb-6 max-w-sm">Your Telegram session requires your 2-Step Verification password to access your message history.</p>
+                                <button
+                                    onClick={() => togglePlatform('Telegram')}
+                                    className="bg-sky-500 text-white px-6 py-2 rounded-lg font-medium hover:bg-sky-600 transition-colors"
+                                >
+                                    Re-authenticate with Password
+                                </button>
+                                <p className="mt-4 text-xs text-gray-400">
+                                    Clicking re-authenticate will allow you to disconnect and sign in again including your password.
+                                </p>
+                            </div>
+                        ) : (
+                            /* Original Layout for Telegram */
+                            <div className="space-y-6">
+                                <div className="flex items-center justify-between">
+                                    <h1 className="text-2xl font-bold text-gray-800">{activePage} Messages</h1>
+                                    <div className="flex items-center space-x-4">
+                                        {activePage === 'Telegram' && !telegramConnected && (
+                                            <button
+                                                onClick={() => setIsTelegramAuthOpen(true)}
+                                                className="px-4 py-2 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-lg hover:from-blue-700 hover:to-cyan-700 transition-all text-sm font-medium flex items-center space-x-2 shadow-md"
+                                            >
+                                                <MessageSquare size={16} />
+                                                <span>Connect Telegram</span>
+                                            </button>
+                                        )}
+                                        {activePage === 'Telegram' && telegramConnected && (
+                                            <button
+                                                onClick={fetchTelegramChats}
+                                                className="p-2 text-gray-500 hover:text-blue-600 transition-colors rounded-full hover:bg-blue-50"
+                                                title="Refresh Telegram Chats"
+                                            >
+                                                <RefreshCw size={20} />
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="rounded-xl bg-white shadow-sm overflow-hidden">
+                                    {loadingMessages ? (
+                                        <div className="p-8 text-center text-gray-500">Loading messages...</div>
+                                    ) : (
+                                        <>
+                                            {messages
+                                                .filter(m => m.source === activePage)
+                                                .map((message) => (
+                                                    <div key={message.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                                                        <div className="flex flex-col md:flex-row">
+                                                            <div
+                                                                className="flex-1 p-4 cursor-pointer border-r border-gray-100"
+                                                                onClick={() => {
+                                                                    setSelectedMessage(message);
+                                                                    if (message.source === 'Telegram') setSelectedTelegramChat(message);
+                                                                }}
+                                                            >
+                                                                <div className="flex items-center space-x-4">
+                                                                    <div className={`flex h-10 w-10 items-center justify-center rounded-full text-white font-bold flex-shrink-0
+                                                                    ${message.source === 'Whatsapp' ? 'bg-green-500' : 'bg-blue-400'}`}>
+                                                                        {message.source[0]}
+                                                                    </div>
+                                                                    <div className="min-w-0 flex-1">
+                                                                        <div className="flex items-center justify-between mb-1">
+                                                                            <h4 className="font-semibold text-gray-900 truncate">{message.sender}</h4>
+                                                                            <span className="text-xs text-gray-400 whitespace-nowrap ml-2">{message.time}</span>
+                                                                        </div>
+                                                                        <p className="text-sm text-gray-600 line-clamp-1 font-medium">{message.subject || message.preview}</p>
+                                                                        <p className="text-xs text-gray-400 line-clamp-2">{message.preview}</p>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            {messages.filter(m => m.source === activePage).length === 0 && (
+                                                <div className="p-12 text-center">
+                                                    <div className="mx-auto w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mb-4">
+                                                        <MessageSquare className="text-gray-400" size={32} />
+                                                    </div>
+                                                    <h3 className="text-lg font-semibold text-gray-700 mb-2">No messages found</h3>
+                                                    <p className="text-sm text-gray-500">
+                                                        Your {activePage} conversation history is empty.
+                                                    </p>
+                                                </div>
+                                            )}
+                                        </>
+                                    )}
+                                </div>
+                            </div>
+                        )
                     ) : (
                         /* New Gmail-like UI for Mail & Inbox */
                         <div className="flex bg-white h-[calc(100vh-8rem)] rounded-xl overflow-hidden shadow-sm border border-gray-200">
@@ -997,7 +1425,7 @@ const Dashboard = () => {
                                 </button>
 
                                 <nav className="space-y-1 flex-1 overflow-y-auto">
-                                    <MailSidebarItem icon={<Inbox size={18} />} label="Inbox" count={messages.length} active={mailFolder === 'inbox'} onClick={() => setMailFolder('inbox')} />
+                                    <MailSidebarItem icon={<Inbox size={18} />} label="Inbox" count={messages.filter(m => m.source === 'Mail' || m.source === 'Gmail').length} active={mailFolder === 'inbox'} onClick={() => setMailFolder('inbox')} />
                                     <MailSidebarItem icon={<Star size={18} />} label="Starred" active={mailFolder === 'starred'} onClick={() => setMailFolder('starred')} />
                                     <MailSidebarItem icon={<Clock size={18} />} label="Snoozed" active={mailFolder === 'snoozed'} onClick={() => setMailFolder('snoozed')} />
                                     <MailSidebarItem icon={<Send size={18} />} label="Sent" active={mailFolder === 'sent'} onClick={() => setMailFolder('sent')} />
@@ -1044,65 +1472,76 @@ const Dashboard = () => {
                                 <div className="flex-1 overflow-y-auto">
                                     {loadingMessages ? (
                                         <div className="p-12 text-center text-gray-500">Loading your emails...</div>
+                                    ) : !connectedPlatforms['Mail'] ? (
+                                        <div className="flex flex-col items-center justify-center p-12 h-full text-center">
+                                            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+                                                <Mail size={32} className="text-blue-600" />
+                                            </div>
+                                            <h3 className="text-xl font-bold text-gray-900 mb-2">Mail Not Connected</h3>
+                                            <p className="text-gray-500 mb-6 max-w-sm">Connect your Gmail account to view your emails, drafts, and manage your inbox directly from the dashboard.</p>
+                                            <button
+                                                onClick={() => togglePlatform('Mail')}
+                                                className="bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors"
+                                            >
+                                                Connect Mail
+                                            </button>
+                                        </div>
+                                    ) : messages.filter(m => m.source === 'Mail' || m.source === 'Gmail').length === 0 ? (
+                                        <div className="p-12 text-center text-gray-500">
+                                            <div className="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                                                <Inbox size={32} className="text-gray-400" />
+                                            </div>
+                                            <p>Your inbox is empty</p>
+                                        </div>
                                     ) : (
                                         messages
-                                            .filter(m => (activePage === 'Inbox' || m.source === activePage) && connectedPlatforms[m.source])
-                                            .length === 0 ? (
-                                            <div className="p-12 text-center text-gray-500">
-                                                <div className="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
-                                                    <Inbox size={32} className="text-gray-400" />
-                                                </div>
-                                                <p>Your inbox is empty</p>
-                                            </div>
-                                        ) : (
-                                            messages
-                                                .filter(m => (activePage === 'Inbox' || m.source === activePage) && connectedPlatforms[m.source])
-                                                .map((message) => (
-                                                    <div
-                                                        key={message.id}
-                                                        className={`group flex items-center px-4 py-3 border-b border-gray-100 hover:shadow-md hover:z-10 bg-white cursor-pointer transition-all relative ${!message.read ? 'bg-white' : 'bg-gray-50/30'}`}
-                                                        onClick={() => {
-                                                            setSelectedMessage(message);
-                                                            // Mark as read locally
-                                                            setMessages(prev => prev.map(m =>
-                                                                m.id === message.id ? { ...m, read: true } : m
-                                                            ));
-                                                        }}
-                                                    >
-                                                        {/* Checkbox & Star */}
-                                                        <div className="flex items-center gap-3 mr-4 text-gray-400 flex-shrink-0">
-                                                            <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" onClick={(e) => e.stopPropagation()} />
-                                                            <Star size={18} className="hover:text-yellow-400 cursor-pointer" onClick={(e) => { e.stopPropagation(); /* toggle star */ }} />
-                                                        </div>
-
-                                                        {/* Sender */}
-                                                        <div className={`w-48 font-semibold text-gray-900 truncate mr-4 ${!message.read ? 'font-bold' : 'font-normal'}`}>
-                                                            {message.sender}
-                                                        </div>
-
-                                                        {/* Subject/Preview */}
-                                                        <div className="flex-1 min-w-0 flex items-center text-sm text-gray-600">
-                                                            <span className={`text-gray-900 mr-2 ${!message.read ? 'font-bold' : 'font-medium'}`}>
-                                                                {message.subject || '(No Subject)'}
-                                                            </span>
-                                                            <span className="text-gray-400 truncate hidden sm:block">- {message.preview}</span>
-                                                        </div>
-
-                                                        {/* Date */}
-                                                        <div className={`text-xs text-gray-500 whitespace-nowrap ml-4 w-16 text-right ${!message.read ? 'font-bold text-gray-900' : ''}`}>
-                                                            {message.time}
-                                                        </div>
-
-                                                        {/* Actions (hover) */}
-                                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-1 bg-white pl-2 shadow-sm rounded-l-lg border-l border-gray-100">
-                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Archive"><Archive size={16} /></button>
-                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Delete"><Trash2 size={16} /></button>
-                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Mark as unread"><Mail size={16} /></button>
-                                                        </div>
+                                            .filter(m => m.source === 'Mail' || m.source === 'Gmail')
+                                            .map((message) => (
+                                                <div
+                                                    key={message.id}
+                                                    className={`group flex items-center px-4 py-3 border-b border-gray-100 hover:shadow-md hover:z-10 bg-white cursor-pointer transition-all relative ${!message.read ? 'bg-white' : 'bg-gray-50/30'}`}
+                                                    onClick={() => {
+                                                        setSelectedMessage(message);
+                                                        // Mark as read locally
+                                                        setMessages(prev => prev.map(m =>
+                                                            m.id === message.id ? { ...m, read: true } : m
+                                                        ));
+                                                    }}
+                                                >
+                                                    {/* Checkbox & Star */}
+                                                    <div className="flex items-center gap-3 mr-4 text-gray-400 flex-shrink-0">
+                                                        <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" onClick={(e) => e.stopPropagation()} />
+                                                        <Star size={18} className="hover:text-yellow-400 cursor-pointer" onClick={(e) => { e.stopPropagation(); /* toggle star */ }} />
                                                     </div>
-                                                ))
-                                        )
-                                    )}
+
+                                                    {/* Sender */}
+                                                    <div className={`w-48 font-semibold text-gray-900 truncate mr-4 ${!message.read ? 'font-bold' : 'font-normal'}`}>
+                                                        {message.sender}
+                                                    </div>
+
+                                                    {/* Subject/Preview */}
+                                                    <div className="flex-1 min-w-0 flex items-center text-sm text-gray-600">
+                                                        <span className={`text-gray-900 mr-2 ${!message.read ? 'font-bold' : 'font-medium'}`}>
+                                                            {message.subject || '(No Subject)'}
+                                                        </span>
+                                                        <span className="text-gray-400 truncate hidden sm:block">- {message.preview}</span>
+                                                    </div>
+
+                                                    {/* Date */}
+                                                    <div className={`text-xs text-gray-500 whitespace-nowrap ml-4 w-16 text-right ${!message.read ? 'font-bold text-gray-900' : ''}`}>
+                                                        {message.time}
+                                                    </div>
+
+                                                    {/* Actions (hover) */}
+                                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-1 bg-white pl-2 shadow-sm rounded-l-lg border-l border-gray-100">
+                                                        <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Archive"><Archive size={16} /></button>
+                                                        <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Delete"><Trash2 size={16} /></button>
+                                                        <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Mark as unread"><Mail size={16} /></button>
+                                                    </div>
+                                                </div>
+                                            ))
+                                    )
+                                    }
                                 </div>
                             </div>
                         </div>
@@ -1121,7 +1560,7 @@ const Dashboard = () => {
 
             {/* Message Detail Modal */}
             {
-                selectedMessage && (
+                selectedMessage && selectedMessage.source !== 'Whatsapp' && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedMessage(null)}>
                         <div className="w-full max-w-5xl max-h-[90vh] overflow-hidden rounded-xl bg-white shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
                             {/* Modal Header */}
@@ -1341,13 +1780,6 @@ const Dashboard = () => {
                 isOpen={isTelegramAuthOpen}
                 onClose={() => setIsTelegramAuthOpen(false)}
                 onSuccess={handleTelegramAuthSuccess}
-            />
-
-            {/* WhatsApp Connect Modal */}
-            <WhatsAppConnectModal
-                isOpen={isWhatsAppConnectOpen}
-                onClose={() => setIsWhatsAppConnectOpen(false)}
-                onConnect={handleWhatsAppConnect}
             />
 
             {/* Mobile Compose FAB for Mail View */}

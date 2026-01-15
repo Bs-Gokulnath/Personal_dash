@@ -1,7 +1,7 @@
 {
-  "name": "personal-dashboard-server",
+  "name": "crivo-inai-server",
   "version": "1.0.0",
-  "description": "Backend for Personal Dashboard",
+  "description": "Backend for Crivo Inai Dashboard",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

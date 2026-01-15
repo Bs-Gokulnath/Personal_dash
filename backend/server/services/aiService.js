@@ -219,7 +219,7 @@ async function chatWithAI(prompt) {
             messages: [
                 { 
                     role: "system", 
-                    content: "You are a helpful AI assistant for a Personal Dashboard application. You can help with emails, tasks, and general questions. Be concise and helpful." 
+                    content: "You are a helpful AI assistant for a Crivo Inai application. You can help with emails, tasks, and general questions. Be concise and helpful." 
                 },
                 { role: "user", content: prompt }
             ],

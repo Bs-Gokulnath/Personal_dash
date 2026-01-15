@@ -31,8 +31,14 @@ class WhatsAppService {
                     '--disable-accelerated-2d-canvas',
                     '--no-first-run',
                     '--no-zygote',
-                    '--disable-gpu'
-                ]
+                    '--disable-gpu',
+                    '--remote-debugging-port=9222'
+                ],
+                executablePath: process.env.CHROME_PATH || undefined // Allow overriding chrome path
+            },
+            webVersionCache: {
+                type: 'remote',
+                remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
             }
         });
 
@@ -77,7 +83,18 @@ class WhatsAppService {
             console.log('New WhatsApp message:', message.from, message.body);
         });
 
-        await this.client.initialize();
+        try {
+            await this.client.initialize();
+            console.log('✅ WhatsApp client.initialize() completed');
+        } catch (error) {
+            console.error('❌ Failed to initialize WhatsApp client:', error);
+            this.client = null;
+            this.isReady = false;
+            this.qrCode = null;
+            // Notify waiting callbacks of the error
+            this.authCallbacks.forEach(callback => callback({ error: error.message }));
+            this.authCallbacks = [];
+        }
     }
 
     async getQRCode() {
@@ -114,19 +131,41 @@ class WhatsAppService {
             throw new Error('WhatsApp not connected');
         }
 
-        const chats = await this.client.getChats();
-        
-        return chats.slice(0, 50).map(chat => ({
-            id: chat.id._serialized,
-            name: chat.name || chat.id.user,
-            isGroup: chat.isGroup,
-            unreadCount: chat.unreadCount,
-            lastMessage: chat.lastMessage ? {
-                body: chat.lastMessage.body,
-                timestamp: chat.lastMessage.timestamp,
-                fromMe: chat.lastMessage.fromMe
-            } : null
-        }));
+        try {
+            const chats = await this.client.getChats();
+            
+            return chats.slice(0, 50).map(chat => ({
+                id: chat.id._serialized,
+                name: chat.name || chat.id.user,
+                isGroup: chat.isGroup,
+                unreadCount: chat.unreadCount,
+                lastMessage: chat.lastMessage ? {
+                    body: chat.lastMessage.body,
+                    timestamp: chat.lastMessage.timestamp,
+                    fromMe: chat.lastMessage.fromMe
+                } : null
+            }));
+        } catch (error) {
+            console.error('❌ Error in getChats:', error);
+            if (error.message.includes('detached Frame') || error.message.includes('Session closed') || error.message.includes('Target closed')) {
+                console.log('🔄 WhatsApp session unstable, attempting auto-recovery...');
+                this.isReady = false;
+                this.qrCode = null;
+                
+                // Attempt to re-initialize after a short delay
+                setTimeout(async () => {
+                    console.log('🚀 Re-initializing WhatsApp client for recovery...');
+                    try {
+                        if (this.client) {
+                            await this.client.destroy().catch(() => {});
+                        }
+                    } catch (e) {}
+                    this.client = null; // Force new client creation
+                    this.initialize().catch(err => console.error('Recovery initialization failed:', err));
+                }, 2000);
+            }
+            throw error;
+        }
     }
 
     async sendMessage(chatId, message) {
@@ -137,6 +176,50 @@ class WhatsAppService {
         await this.client.sendMessage(chatId, message);
         return { success: true };
     }
+
+
+    async getChatMessages(chatId, limit = 50) {
+        if (!this.isReady) {
+            throw new Error('WhatsApp not connected');
+        }
+
+        try {
+            console.log(`📱 Fetching messages for chat: ${chatId}, limit: ${limit}`);
+            const chat = await this.client.getChatById(chatId);
+            
+            // Fetch messages from the chat
+            let messages = await chat.fetchMessages({ limit: limit });
+            
+            console.log(`✅ Fetched ${messages.length} raw messages from WhatsApp`);
+            
+            if (!messages || messages.length === 0) {
+                console.log('⚠️ No messages found in chat');
+                return [];
+            }
+            
+            // Format and reverse to show oldest first
+            const formattedMessages = messages.reverse().map((msg, index) => {
+                console.log(`Message ${index}: ${msg.body?.substring(0, 50)}... fromMe: ${msg.fromMe}`);
+                return {
+                    id: msg.id._serialized,
+                    body: msg.body || '',
+                    timestamp: msg.timestamp,
+                    fromMe: msg.fromMe,
+                    author: msg.author || '',
+                    type: msg.type
+                };
+            });
+            
+            console.log(`✅ Returning ${formattedMessages.length} formatted messages`);
+            return formattedMessages;
+        } catch (error) {
+            console.error('❌ Error fetching chat messages:', error);
+            throw error;
+        }
+    }
+
+
+
 
     async disconnect() {
         if (this.client) {

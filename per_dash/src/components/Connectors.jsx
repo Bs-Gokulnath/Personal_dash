@@ -43,7 +43,7 @@ const Connectors = ({ connectedPlatforms, togglePlatform }) => {
             <div className="mt-8 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                 <h4 className="text-sm font-semibold text-yellow-800 mb-2">Having trouble connecting Gmail?</h4>
                 <p className="text-xs text-yellow-700 mb-2">
-                    If you see an "Access blocked: Personal_dash has not completed the Google verification process" error:
+                    If you see an "Access blocked: Crivo Inai has not completed the Google verification process" error:
                 </p>
                 <ol className="list-decimal list-inside text-xs text-yellow-700 space-y-1 ml-2">
                     <li>This is because the app is in "Testing" mode.</li>

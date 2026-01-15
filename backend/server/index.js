@@ -17,6 +17,20 @@ const { connectDB, isDBConnected } = require('./config/database');
 // Connect to MongoDB (will warn if not configured)
 connectDB();
 
+// BigInt JSON serialization polyfill
+if (!BigInt.prototype.toJSON) {
+  BigInt.prototype.toJSON = function() { return this.toString() };
+}
+
+// Global error handlers to prevent crashes
+process.on('uncaughtException', (err) => {
+    console.error('❌ Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -26,7 +40,7 @@ app.use(express.json());
 
 // Basic Route
 app.get('/', (req, res) => {
-  res.send('Personal Dashboard API is running');
+  res.send('Crivo Inai API is running');
 });
 
 // --- Gmail Auth Routes ---
@@ -678,18 +692,16 @@ app.get('/api/telegram/chats', async (req, res) => {
 
         console.log(`📱 Fetching Telegram chats for user: ${userId}`);
         
-        // Get decrypted session string
-        const sessionObj = session.toObject();
-        const decryptedSession = sessionObj.sessionString;
-        
-        console.log(`🔑 Session string length: ${decryptedSession?.length || 0}`);
-        console.log(`🔑 Session preview: ${decryptedSession?.substring(0, 20)}...`);
+        // Use the session directly from the document to ensure getter is triggered
+        const sessionString = session.sessionString;
+        console.log(`🔑 Session string present: ${!!sessionString}, length: ${sessionString?.length || 0}`);
 
         // Initialize client with saved session
-        const client = await telegramService.getClient(userId, decryptedSession);
+        const client = await telegramService.getClient(userId, sessionString);
         
         // Connect if not connected
         if (!client.connected) {
+            console.log('🔄 Connecting Telegram client...');
             await client.connect();
             console.log('✅ Telegram client connected');
         }
@@ -697,13 +709,13 @@ app.get('/api/telegram/chats', async (req, res) => {
         // Get dialogs
         const chats = await telegramService.getDialogs(userId, 50);
         
-        console.log(`✅ Fetched ${chats.length} Telegram chats`);
+        console.log(`✅ Fetched ${chats?.length || 0} Telegram chats`);
 
         res.json({ chats });
 
     } catch (error) {
-        console.error("Error fetching Telegram chats:", error);
-        res.status(500).json({ error: error.message });
+        console.error("❌ Error fetching Telegram chats:", error);
+        res.status(500).json({ error: error.message, stack: error.stack });
     }
 });
 
@@ -797,8 +809,8 @@ app.get('/api/platforms/status', async (req, res) => {
     // Check WhatsApp
     let whatsappConnected = false;
     try {
-        const whatsappSession = await WhatsAppSession.findOne({ userId, isActive: true });
-        whatsappConnected = !!whatsappSession;
+        const whatsappStatus = await whatsappService.getStatus();
+        whatsappConnected = whatsappStatus.connected;
     } catch (e) {
         console.error("Error checking WhatsApp status:", e);
         whatsappConnected = false;
@@ -895,6 +907,29 @@ app.post('/api/whatsapp/send', async (req, res) => {
 
     } catch (error) {
         console.error("Error sending WhatsApp message:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 23. Get WhatsApp Chat Messages
+app.get('/api/whatsapp/messages/:chatId', async (req, res) => {
+    const { chatId } = req.params;
+    const limit = parseInt(req.query.limit) || 50;
+    const userId = req.headers['x-user-id'] || 'anonymous';
+
+    if (!chatId) {
+        return res.status(400).json({ error: "chatId is required" });
+    }
+
+    try {
+        console.log(`📱 Fetching messages for chat: ${chatId}`);
+        const messages = await whatsappService.getChatMessages(chatId, limit);
+        
+        console.log(`✅ Fetched ${messages.length} messages`);
+        res.json({ messages });
+
+    } catch (error) {
+        console.error("Error fetching WhatsApp messages:", error);
         res.status(500).json({ error: error.message });
     }
 });

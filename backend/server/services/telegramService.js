@@ -97,21 +97,36 @@ class TelegramService {
         console.log(`✅ Connected client for getDialogs: ${userId}`);
       }
 
+      console.log(`Fetching Telegram dialogs for user ${userId} with limit ${limit}`);
       const dialogs = await client.getDialogs({ limit });
+      console.log(`Raw dialogs fetched: ${dialogs.length}`);
       
-      return dialogs.map(dialog => ({
-        id: dialog.id?.toString(),
-        title: dialog.title || dialog.name || 'Unknown',
-        isGroup: dialog.isGroup,
-        isChannel: dialog.isChannel,
-        unreadCount: dialog.unreadCount || 0,
-        date: dialog.date,
-        message: dialog.message ? {
-          text: dialog.message.message || '',
-          date: dialog.message.date,
-          fromId: dialog.message.fromId?.userId?.toString()
-        } : null
-      }));
+      return dialogs.map(dialog => {
+        try {
+            const chatEntity = dialog.entity;
+            return {
+                id: dialog.id ? dialog.id.toString() : (chatEntity?.id ? chatEntity.id.toString() : 'unknown'),
+                title: dialog.title || chatEntity?.title || chatEntity?.firstName || 'Unknown',
+                isGroup: !!dialog.isGroup,
+                isChannel: !!dialog.isChannel,
+                unreadCount: Number(dialog.unreadCount) || 0,
+                date: Number(dialog.date) || 0,
+                message: dialog.message ? {
+                    id: dialog.message.id ? dialog.message.id.toString() : null,
+                    text: dialog.message.message || '',
+                    date: Number(dialog.message.date) || 0,
+                    fromId: dialog.message.fromId ? 
+                            (dialog.message.fromId.userId ? dialog.message.fromId.userId.toString() : 
+                             dialog.message.fromId.channelId ? dialog.message.fromId.channelId.toString() : 
+                             dialog.message.fromId.chatId ? dialog.message.fromId.chatId.toString() : null) 
+                            : null
+                } : null
+            };
+        } catch (err) {
+            console.error('Error mapping dialog:', err);
+            return null;
+        }
+      }).filter(Boolean);
 
     } catch (error) {
       console.error('Error fetching Telegram dialogs:', error);
@@ -132,11 +147,15 @@ class TelegramService {
       const messages = await client.getMessages(chatId, { limit });
       
       return messages.map(msg => ({
-        id: msg.id,
+        id: msg.id ? msg.id.toString() : Math.random().toString(36).substr(2, 9),
         text: msg.message || '',
-        date: msg.date,
-        fromId: msg.fromId?.userId?.toString(),
-        isOutgoing: msg.out,
+        date: msg.date ? Number(msg.date) : Math.floor(Date.now() / 1000),
+        fromId: msg.fromId ? 
+                (msg.fromId.userId ? msg.fromId.userId.toString() : 
+                 msg.fromId.channelId ? msg.fromId.channelId.toString() : 
+                 msg.fromId.chatId ? msg.fromId.chatId.toString() : null) 
+                : null,
+        isOutgoing: !!msg.out,
         mediaType: msg.media ? msg.media.className : null,
       }));
 
