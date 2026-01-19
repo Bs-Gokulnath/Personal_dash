@@ -6,7 +6,6 @@ class WhatsAppService {
         this.client = null;
         this.isReady = false;
         this.qrCode = null;
-        this.authCallbacks = [];
         this.sessionPath = path.join(__dirname, '..', '.wwebjs_auth');
     }
 
@@ -46,8 +45,6 @@ class WhatsAppService {
         this.client.on('qr', (qr) => {
             console.log('QR Code received');
             this.qrCode = qr;
-            // Notify all waiting callbacks
-            this.authCallbacks.forEach(callback => callback({ qr }));
         });
 
         // Ready event
@@ -55,8 +52,6 @@ class WhatsAppService {
             console.log('WhatsApp client is ready!');
             this.isReady = true;
             this.qrCode = null;
-            this.authCallbacks.forEach(callback => callback({ ready: true }));
-            this.authCallbacks = [];
         });
 
         // Authenticated event
@@ -67,8 +62,6 @@ class WhatsAppService {
         // Auth failure event
         this.client.on('auth_failure', (msg) => {
             console.error('WhatsApp authentication failed:', msg);
-            this.authCallbacks.forEach(callback => callback({ error: msg }));
-            this.authCallbacks = [];
         });
 
         // Disconnected event
@@ -91,38 +84,34 @@ class WhatsAppService {
             this.client = null;
             this.isReady = false;
             this.qrCode = null;
-            // Notify waiting callbacks of the error
-            this.authCallbacks.forEach(callback => callback({ error: error.message }));
-            this.authCallbacks = [];
+            this.isReady = false;
+            this.qrCode = null;
         }
     }
 
     async getQRCode() {
-        return new Promise((resolve) => {
-            if (this.isReady) {
-                resolve({ ready: true });
-                return;
-            }
+        if (this.isReady) {
+            return { ready: true };
+        }
 
-            if (this.qrCode) {
-                resolve({ qr: this.qrCode });
-                return;
-            }
+        if (this.qrCode) {
+            return { qr: this.qrCode };
+        }
 
-            // Wait for QR or ready event
-            this.authCallbacks.push(resolve);
+        // Initialize if not already done
+        if (!this.client) {
+            this.initialize();
+        }
 
-            // Initialize if not already done
-            if (!this.client) {
-                this.initialize();
-            }
-        });
+        // Return initializing status so frontend handles polling
+        return { initializing: true };
     }
 
     async getStatus() {
         return {
             connected: this.isReady,
-            hasClient: !!this.client
+            hasClient: !!this.client,
+            qrGenerated: !!this.qrCode
         };
     }
 
@@ -134,7 +123,11 @@ class WhatsAppService {
         try {
             const chats = await this.client.getChats();
             
-            return chats.slice(0, 50).map(chat => ({
+            // Sort chats by most recent message first for the sidebar list
+            return chats
+                .sort((a, b) => (b.lastMessage?.timestamp || 0) - (a.lastMessage?.timestamp || 0))
+                .slice(0, 50)
+                .map(chat => ({
                 id: chat.id._serialized,
                 name: chat.name || chat.id.user,
                 isGroup: chat.isGroup,
@@ -173,8 +166,28 @@ class WhatsAppService {
             throw new Error('WhatsApp not connected');
         }
 
-        await this.client.sendMessage(chatId, message);
-        return { success: true };
+        try {
+            // The 'markedUnread' error often happens when WhatsApp Web tries to mark as seen automatically.
+            // We'll try with sendSeen: false to avoid that internal JS crash in WhatsApp Web.
+            await this.client.sendMessage(chatId, message, { sendSeen: false });
+            return { success: true };
+        } catch (error) {
+            console.error('❌ WhatsApp primary sendMessage failed:', error.message);
+            
+            // Fallback: If it's the internal WhatsApp Web JS error, try fetching the chat object first
+            if (error.message.includes('markedUnread') || error.message.includes('undefined')) {
+                console.log('🔄 Attempting fallback message delivery...');
+                try {
+                    const chat = await this.client.getChatById(chatId);
+                    await chat.sendMessage(message);
+                    return { success: true };
+                } catch (fallbackError) {
+                    console.error('❌ Fallback delivery also failed:', fallbackError.message);
+                    throw fallbackError;
+                }
+            }
+            throw error;
+        }
     }
 
 
@@ -197,8 +210,8 @@ class WhatsAppService {
                 return [];
             }
             
-            // Format and reverse to show oldest first
-            const formattedMessages = messages.reverse().map((msg, index) => {
+            // Format messages - typically fetchMessages returns them in chronological order
+            const formattedMessages = messages.map((msg, index) => {
                 console.log(`Message ${index}: ${msg.body?.substring(0, 50)}... fromMe: ${msg.fromMe}`);
                 return {
                     id: msg.id._serialized,
@@ -222,11 +235,53 @@ class WhatsAppService {
 
 
     async disconnect() {
-        if (this.client) {
-            await this.client.destroy();
-            this.client = null;
+        console.log('🗑️ Disconnecting WhatsApp and clearing session files...');
+        try {
+            if (this.client) {
+                try {
+                    // Try to logout first if possible to invalidate session on server
+                    await this.client.logout().catch(() => {});
+                    await this.client.destroy();
+                } catch (e) {
+                    console.warn('Warning during client destroy:', e.message);
+                }
+                this.client = null;
+            }
             this.isReady = false;
             this.qrCode = null;
+
+            // Wait a bit for browser processes to fully exit before deleting files (critical on Windows)
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            const fs = require('fs');
+            const deleteFolderRecursive = (folderPath, retries = 3) => {
+                if (fs.existsSync(folderPath)) {
+                    for (let i = 0; i < retries; i++) {
+                        try {
+                            fs.rmSync(folderPath, { recursive: true, force: true });
+                            console.log(`✅ Folder cleared: ${folderPath}`);
+                            return true;
+                        } catch (err) {
+                            if (i === retries - 1) console.error(`Failed to delete ${folderPath}:`, err.message);
+                            else {
+                                console.log(`Retry ${i + 1} deleting ${folderPath}...`);
+                                // Sleep for 1 second before retry
+                                // Note: we are using sync sleep here since rmSync is sync, 
+                                // or just use a small delay if possible.
+                            }
+                        }
+                    }
+                }
+                return false;
+            };
+
+            deleteFolderRecursive(this.sessionPath);
+            
+            const cachePath = path.join(__dirname, '..', '.wwebjs_cache');
+            deleteFolderRecursive(cachePath);
+
+        } catch (error) {
+            console.error('Error during WhatsApp disconnect:', error);
         }
     }
 }

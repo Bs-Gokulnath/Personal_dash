@@ -35,7 +35,8 @@ import {
     AlertCircle,
     Trash2,
     Archive,
-    Lock
+    Lock,
+    Loader2
 } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { auth } from '../firebase';
@@ -342,10 +343,9 @@ const Dashboard = () => {
             setMessages(prev => [...prev.filter(m => m.source !== 'Mail'), ...data]);
         } catch (err) {
             console.error("Error fetching emails:", err);
-            // Instead of showing an error, we assume it's a connection issue and redirect to Connectors
+            // Instead of showing an error, we assume it's a connection issue
             setErrorMessages(null);
             setConnectedPlatforms(prev => ({ ...prev, Mail: false }));
-            handleNavClick('Connectors');
         } finally {
             setLoadingMessages(false);
         }
@@ -606,6 +606,7 @@ const Dashboard = () => {
     };
 
     const fetchTelegramChats = async () => {
+        setLoadingMessages(true);
         try {
             console.log('Fetching Telegram chats...');
             const response = await fetch('http://localhost:5000/api/telegram/chats');
@@ -648,12 +649,14 @@ const Dashboard = () => {
                 if (errorData.error?.includes('SESSION_PASSWORD_NEEDED')) {
                     setTelegramError('2FA_REQUIRED');
                 } else {
-                    setTelegramError('FETCH_ERROR');
+                    setTelegramError(errorData.error || 'Failed to fetch Telegram chats');
                 }
             }
         } catch (error) {
             console.error('❌ Error fetching Telegram chats:', error);
-            setTelegramError('NETWORK_ERROR');
+            setTelegramError('Network error. Backend might be down.');
+        } finally {
+            setLoadingMessages(false);
         }
     };
 
@@ -678,6 +681,7 @@ const Dashboard = () => {
     };
 
     const fetchWhatsAppConversations = async () => {
+        setLoadingMessages(true);
         try {
             const response = await fetch('http://localhost:5000/api/whatsapp/chats');
             if (response.ok) {
@@ -718,6 +722,8 @@ const Dashboard = () => {
         } catch (error) {
             console.error('Error fetching WhatsApp conversations:', error);
             setWhatsappError('Network error. Please check if backend is running.');
+        } finally {
+            setLoadingMessages(false);
         }
     };
 
@@ -801,6 +807,10 @@ const Dashboard = () => {
     };
 
     const handleNavClick = (page) => {
+        // If clicking a platform that isn't connected, we can still navigate for WhatsApp/Telegram
+        // to show their dedicated 'Not Connected' UI, but for Gmail we show the warning first.
+
+
         setActivePage(page);
         localStorage.setItem('activePage', page);
         if (page !== 'Mail' && !['Whatsapp', 'Telegram'].includes(page)) {
@@ -960,7 +970,12 @@ const Dashboard = () => {
                 {activePage === 'Connectors' ? (
                     <Connectors connectedPlatforms={connectedPlatforms} togglePlatform={togglePlatform} />
                 ) : activePage === 'Dashboard' ? (
-                    <Overview messages={messages} connectedPlatforms={connectedPlatforms} user={user} />
+                    <Overview
+                        messages={messages}
+                        connectedPlatforms={connectedPlatforms}
+                        user={user}
+                        togglePlatform={togglePlatform}
+                    />
                 ) : ['Mail', 'Inbox', 'Whatsapp', 'Telegram'].includes(activePage) ? (
                     activePage === 'Whatsapp' ? (
                         !connectedPlatforms['Whatsapp'] || !whatsappConnected ? (
@@ -1005,10 +1020,8 @@ const Dashboard = () => {
                                                 placeholder="Search or start new chat"
                                                 className="w-full pl-12 pr-4 py-2 bg-[#f0f2f5] rounded-lg text-sm focus:outline-none"
                                             />
-                                            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">
-                                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                                                    <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" fill="currentColor" />
-                                                </svg>
+                                            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">
+                                                <Search size={18} />
                                             </div>
                                         </div>
                                     </div>
@@ -1016,7 +1029,23 @@ const Dashboard = () => {
                                     {/* Chat List */}
                                     <div className="flex-1 overflow-y-auto">
                                         {loadingMessages ? (
-                                            <div className="p-8 text-center text-gray-500">Loading chats...</div>
+                                            <div className="flex flex-col">
+                                                {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                                                    <div key={i} className="p-4 border-b border-gray-100 animate-pulse">
+                                                        <div className="flex items-center space-x-4">
+                                                            <div className="w-12 h-12 bg-gray-200 rounded-full"></div>
+                                                            <div className="flex-1 space-y-2">
+                                                                <div className="h-4 bg-gray-200 rounded w-1/4"></div>
+                                                                <div className="h-3 bg-gray-100 rounded w-3/4"></div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                                <div className="p-8 text-center text-gray-500">
+                                                    <Loader2 className="w-8 h-8 text-[#008069] animate-spin mx-auto mb-2" />
+                                                    <p className="text-sm">Fetching your chats...</p>
+                                                </div>
+                                            </div>
                                         ) : whatsappError ? (
                                             <div className="p-12 text-center">
                                                 <div className="mx-auto w-16 h-16 rounded-full bg-red-50 flex items-center justify-center mb-4">
@@ -1322,7 +1351,7 @@ const Dashboard = () => {
                                 <h3 className="text-xl font-bold text-gray-900 mb-2">2FA Password Needed</h3>
                                 <p className="text-gray-500 mb-6 max-w-sm">Your Telegram session requires your 2-Step Verification password to access your message history.</p>
                                 <button
-                                    onClick={() => togglePlatform('Telegram')}
+                                    onClick={() => setIsTelegramAuthOpen(true)}
                                     className="bg-sky-500 text-white px-6 py-2 rounded-lg font-medium hover:bg-sky-600 transition-colors"
                                 >
                                     Re-authenticate with Password
@@ -1359,7 +1388,23 @@ const Dashboard = () => {
                                 </div>
                                 <div className="rounded-xl bg-white shadow-sm overflow-hidden">
                                     {loadingMessages ? (
-                                        <div className="p-8 text-center text-gray-500">Loading messages...</div>
+                                        <div className="flex flex-col bg-white">
+                                            {[1, 2, 3, 4, 5].map((i) => (
+                                                <div key={i} className="p-4 border-b border-gray-50 animate-pulse">
+                                                    <div className="flex items-center space-x-4">
+                                                        <div className="w-10 h-10 bg-gray-200 rounded-full"></div>
+                                                        <div className="flex-1 space-y-2">
+                                                            <div className="h-4 bg-gray-200 rounded w-1/3"></div>
+                                                            <div className="h-3 bg-gray-100 rounded w-full"></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                            <div className="p-12 text-center text-gray-500">
+                                                <Loader2 className="w-8 h-8 text-blue-500 animate-spin mx-auto mb-2" />
+                                                <p className="text-sm">Retrieving Telegram messages...</p>
+                                            </div>
+                                        </div>
                                     ) : (
                                         <>
                                             {messages
@@ -1398,9 +1443,18 @@ const Dashboard = () => {
                                                         <MessageSquare className="text-gray-400" size={32} />
                                                     </div>
                                                     <h3 className="text-lg font-semibold text-gray-700 mb-2">No messages found</h3>
-                                                    <p className="text-sm text-gray-500">
+                                                    <p className="text-sm text-gray-500 mb-6">
                                                         Your {activePage} conversation history is empty.
                                                     </p>
+                                                    {activePage === 'Telegram' && (
+                                                        <button
+                                                            onClick={fetchTelegramChats}
+                                                            className="mx-auto px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors text-sm font-medium flex items-center gap-2"
+                                                        >
+                                                            <RefreshCw size={16} />
+                                                            Refresh Telegram Chats
+                                                        </button>
+                                                    )}
                                                 </div>
                                             )}
                                         </>
@@ -1410,141 +1464,142 @@ const Dashboard = () => {
                         )
                     ) : (
                         /* New Gmail-like UI for Mail & Inbox */
-                        <div className="flex bg-white h-[calc(100vh-8rem)] rounded-xl overflow-hidden shadow-sm border border-gray-200">
-                            {/* Left Sidebar */}
-                            <div className="w-64 flex flex-col p-4 border-r border-gray-100 hidden md:flex bg-cyan-50/30">
+                        !connectedPlatforms['Mail'] ? (
+                            <div className="flex flex-col items-center justify-center p-12 h-[calc(100vh-8rem)] text-center bg-white rounded-xl border border-gray-200 shadow-sm">
+                                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-6">
+                                    <Mail size={32} className="text-blue-600" />
+                                </div>
+                                <h3 className="text-xl font-bold text-gray-900 mb-2">Mail Not Connected</h3>
+                                <p className="text-gray-500 mb-6 max-w-sm">Connect your Gmail account to view your emails, drafts, and manage your inbox directly from the dashboard.</p>
                                 <button
-                                    onClick={() => {
-                                        setComposeData({ to: '', subject: '', body: '' });
-                                        setIsComposeOpen(true);
-                                    }}
-                                    className="flex items-center gap-3 bg-white text-gray-700 font-medium py-4 px-6 rounded-2xl shadow hover:shadow-md transition-all mb-6 w-fit border border-gray-100"
+                                    onClick={() => togglePlatform('Mail')}
+                                    className="bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors"
                                 >
-                                    <Pencil size={18} />
-                                    <span>Compose</span>
+                                    Connect Mail
                                 </button>
-
-                                <nav className="space-y-1 flex-1 overflow-y-auto">
-                                    <MailSidebarItem icon={<Inbox size={18} />} label="Inbox" count={messages.filter(m => m.source === 'Mail' || m.source === 'Gmail').length} active={mailFolder === 'inbox'} onClick={() => setMailFolder('inbox')} />
-                                    <MailSidebarItem icon={<Star size={18} />} label="Starred" active={mailFolder === 'starred'} onClick={() => setMailFolder('starred')} />
-                                    <MailSidebarItem icon={<Clock size={18} />} label="Snoozed" active={mailFolder === 'snoozed'} onClick={() => setMailFolder('snoozed')} />
-                                    <MailSidebarItem icon={<Send size={18} />} label="Sent" active={mailFolder === 'sent'} onClick={() => setMailFolder('sent')} />
-                                    <MailSidebarItem icon={<File size={18} />} label="Drafts" count={52} active={mailFolder === 'drafts'} onClick={() => setMailFolder('drafts')} />
-                                    <MailSidebarItem icon={<Package size={18} />} label="Purchases" count={27} active={mailFolder === 'purchases'} onClick={() => setMailFolder('purchases')} />
-                                    <MailSidebarItem icon={<ChevronDown size={18} />} label="More" active={false} onClick={() => { }} />
-                                </nav>
-
-                                <div className="mt-4 pt-4 border-t border-gray-200">
-                                    <div className="flex items-center justify-between px-3 mb-2">
-                                        <span className="text-base font-medium text-gray-700">Labels</span>
-                                        <button className="text-gray-500 hover:text-gray-700"><Plus size={18} /></button>
-                                    </div>
-                                </div>
                             </div>
+                        ) : (
+                            <div className="flex bg-white h-[calc(100vh-8rem)] rounded-xl overflow-hidden shadow-sm border border-gray-200">
+                                {/* Left Sidebar */}
+                                <div className="w-64 flex flex-col p-4 border-r border-gray-100 hidden md:flex bg-cyan-50/30">
+                                    <button
+                                        onClick={() => {
+                                            setComposeData({ to: '', subject: '', body: '' });
+                                            setIsComposeOpen(true);
+                                        }}
+                                        className="flex items-center gap-3 bg-white text-gray-700 font-medium py-4 px-6 rounded-2xl shadow hover:shadow-md transition-all mb-6 w-fit border border-gray-100"
+                                    >
+                                        <Pencil size={18} />
+                                        <span>Compose</span>
+                                    </button>
 
-                            {/* Main Content */}
-                            <div className="flex-1 flex flex-col min-w-0 bg-white">
-                                {/* Tabs */}
-                                <div className="flex items-center border-b border-gray-200 bg-white px-2">
-                                    <MailTab icon={<Inbox size={18} />} label="Primary" active={mailTab === 'Primary'} onClick={() => { setMailTab('Primary'); localStorage.setItem('mailTab', 'Primary'); }} color="blue" />
-                                    <MailTab icon={<Tag size={18} />} label="Promotions" active={mailTab === 'Promotions'} onClick={() => { setMailTab('Promotions'); localStorage.setItem('mailTab', 'Promotions'); }} badge="2 new" color="green" />
-                                    <MailTab icon={<Users size={18} />} label="Social" active={mailTab === 'Social'} onClick={() => { setMailTab('Social'); localStorage.setItem('mailTab', 'Social'); }} badge="1 new" color="blue" />
-                                    <MailTab icon={<AlertCircle size={18} />} label="Updates" active={mailTab === 'Updates'} onClick={() => { setMailTab('Updates'); localStorage.setItem('mailTab', 'Updates'); }} badge="1 new" color="orange" />
+                                    <nav className="space-y-1 flex-1 overflow-y-auto">
+                                        <MailSidebarItem icon={<Inbox size={18} />} label="Inbox" count={messages.filter(m => m.source === 'Mail' || m.source === 'Gmail').length} active={mailFolder === 'inbox'} onClick={() => setMailFolder('inbox')} />
+                                        <MailSidebarItem icon={<Star size={18} />} label="Starred" active={mailFolder === 'starred'} onClick={() => setMailFolder('starred')} />
+                                        <MailSidebarItem icon={<Clock size={18} />} label="Snoozed" active={mailFolder === 'snoozed'} onClick={() => setMailFolder('snoozed')} />
+                                        <MailSidebarItem icon={<Send size={18} />} label="Sent" active={mailFolder === 'sent'} onClick={() => setMailFolder('sent')} />
+                                        <MailSidebarItem icon={<File size={18} />} label="Drafts" count={52} active={mailFolder === 'drafts'} onClick={() => setMailFolder('drafts')} />
+                                        <MailSidebarItem icon={<Package size={18} />} label="Purchases" count={27} active={mailFolder === 'purchases'} onClick={() => setMailFolder('purchases')} />
+                                        <MailSidebarItem icon={<ChevronDown size={18} />} label="More" active={false} onClick={() => { }} />
+                                    </nav>
+
+                                    <div className="mt-4 pt-4 border-t border-gray-200">
+                                        <div className="flex items-center justify-between px-3 mb-2">
+                                            <span className="text-base font-medium text-gray-700">Labels</span>
+                                            <button className="text-gray-500 hover:text-gray-700"><Plus size={18} /></button>
+                                        </div>
+                                    </div>
                                 </div>
 
-                                {/* Controls Bar */}
-                                <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-gray-50/50">
-                                    <div className="flex items-center gap-2">
-                                        <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
-                                        <button onClick={fetchEmails} className="p-2 text-gray-500 hover:bg-gray-200 rounded-full" title="Refresh">
-                                            <RefreshCw size={18} className={loadingMessages ? 'animate-spin' : ''} />
-                                        </button>
-                                        <button className="p-2 text-gray-500 hover:bg-gray-200 rounded-full" title="Mark as read">
-                                            <Mail size={18} />
-                                        </button>
+                                {/* Main Content */}
+                                <div className="flex-1 flex flex-col min-w-0 bg-white">
+                                    {/* Tabs */}
+                                    <div className="flex items-center border-b border-gray-200 bg-white px-2">
+                                        <MailTab icon={<Inbox size={18} />} label="Primary" active={mailTab === 'Primary'} onClick={() => { setMailTab('Primary'); localStorage.setItem('mailTab', 'Primary'); }} color="blue" />
+                                        <MailTab icon={<Tag size={18} />} label="Promotions" active={mailTab === 'Promotions'} onClick={() => { setMailTab('Promotions'); localStorage.setItem('mailTab', 'Promotions'); }} badge="2 new" color="green" />
+                                        <MailTab icon={<Users size={18} />} label="Social" active={mailTab === 'Social'} onClick={() => { setMailTab('Social'); localStorage.setItem('mailTab', 'Social'); }} badge="1 new" color="blue" />
+                                        <MailTab icon={<AlertCircle size={18} />} label="Updates" active={mailTab === 'Updates'} onClick={() => { setMailTab('Updates'); localStorage.setItem('mailTab', 'Updates'); }} badge="1 new" color="orange" />
                                     </div>
-                                    <div className="text-xs text-gray-500">
-                                        1-{Math.min(50, messages.length)} of {messages.length}
-                                    </div>
-                                </div>
 
-                                {/* Message List */}
-                                <div className="flex-1 overflow-y-auto">
-                                    {loadingMessages ? (
-                                        <div className="p-12 text-center text-gray-500">Loading your emails...</div>
-                                    ) : !connectedPlatforms['Mail'] ? (
-                                        <div className="flex flex-col items-center justify-center p-12 h-full text-center">
-                                            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-6">
-                                                <Mail size={32} className="text-blue-600" />
-                                            </div>
-                                            <h3 className="text-xl font-bold text-gray-900 mb-2">Mail Not Connected</h3>
-                                            <p className="text-gray-500 mb-6 max-w-sm">Connect your Gmail account to view your emails, drafts, and manage your inbox directly from the dashboard.</p>
-                                            <button
-                                                onClick={() => togglePlatform('Mail')}
-                                                className="bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors"
-                                            >
-                                                Connect Mail
+                                    {/* Controls Bar */}
+                                    <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-gray-50/50">
+                                        <div className="flex items-center gap-2">
+                                            <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
+                                            <button onClick={fetchEmails} className="p-2 text-gray-500 hover:bg-gray-200 rounded-full" title="Refresh">
+                                                <RefreshCw size={18} className={loadingMessages ? 'animate-spin' : ''} />
+                                            </button>
+                                            <button className="p-2 text-gray-500 hover:bg-gray-200 rounded-full" title="Mark as read">
+                                                <Mail size={18} />
                                             </button>
                                         </div>
-                                    ) : messages.filter(m => m.source === 'Mail' || m.source === 'Gmail').length === 0 ? (
-                                        <div className="p-12 text-center text-gray-500">
-                                            <div className="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
-                                                <Inbox size={32} className="text-gray-400" />
-                                            </div>
-                                            <p>Your inbox is empty</p>
+                                        <div className="text-xs text-gray-500">
+                                            1-{Math.min(50, messages.length)} of {messages.length}
                                         </div>
-                                    ) : (
-                                        messages
-                                            .filter(m => m.source === 'Mail' || m.source === 'Gmail')
-                                            .map((message) => (
-                                                <div
-                                                    key={message.id}
-                                                    className={`group flex items-center px-4 py-3 border-b border-gray-100 hover:shadow-md hover:z-10 bg-white cursor-pointer transition-all relative ${!message.read ? 'bg-white' : 'bg-gray-50/30'}`}
-                                                    onClick={() => {
-                                                        setSelectedMessage(message);
-                                                        // Mark as read locally
-                                                        setMessages(prev => prev.map(m =>
-                                                            m.id === message.id ? { ...m, read: true } : m
-                                                        ));
-                                                    }}
-                                                >
-                                                    {/* Checkbox & Star */}
-                                                    <div className="flex items-center gap-3 mr-4 text-gray-400 flex-shrink-0">
-                                                        <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" onClick={(e) => e.stopPropagation()} />
-                                                        <Star size={18} className="hover:text-yellow-400 cursor-pointer" onClick={(e) => { e.stopPropagation(); /* toggle star */ }} />
-                                                    </div>
+                                    </div>
 
-                                                    {/* Sender */}
-                                                    <div className={`w-48 font-semibold text-gray-900 truncate mr-4 ${!message.read ? 'font-bold' : 'font-normal'}`}>
-                                                        {message.sender}
-                                                    </div>
-
-                                                    {/* Subject/Preview */}
-                                                    <div className="flex-1 min-w-0 flex items-center text-sm text-gray-600">
-                                                        <span className={`text-gray-900 mr-2 ${!message.read ? 'font-bold' : 'font-medium'}`}>
-                                                            {message.subject || '(No Subject)'}
-                                                        </span>
-                                                        <span className="text-gray-400 truncate hidden sm:block">- {message.preview}</span>
-                                                    </div>
-
-                                                    {/* Date */}
-                                                    <div className={`text-xs text-gray-500 whitespace-nowrap ml-4 w-16 text-right ${!message.read ? 'font-bold text-gray-900' : ''}`}>
-                                                        {message.time}
-                                                    </div>
-
-                                                    {/* Actions (hover) */}
-                                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-1 bg-white pl-2 shadow-sm rounded-l-lg border-l border-gray-100">
-                                                        <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Archive"><Archive size={16} /></button>
-                                                        <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Delete"><Trash2 size={16} /></button>
-                                                        <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Mark as unread"><Mail size={16} /></button>
-                                                    </div>
+                                    {/* Message List */}
+                                    <div className="flex-1 overflow-y-auto">
+                                        {loadingMessages ? (
+                                            <div className="p-12 text-center text-gray-500">Loading your emails...</div>
+                                        ) : messages.filter(m => m.source === 'Mail' || m.source === 'Gmail').length === 0 ? (
+                                            <div className="p-12 text-center text-gray-500">
+                                                <div className="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                                                    <Inbox size={32} className="text-gray-400" />
                                                 </div>
-                                            ))
-                                    )
-                                    }
+                                                <p>Your inbox is empty</p>
+                                            </div>
+                                        ) : (
+                                            messages
+                                                .filter(m => m.source === 'Mail' || m.source === 'Gmail')
+                                                .map((message) => (
+                                                    <div
+                                                        key={message.id}
+                                                        className={`group flex items-center px-4 py-3 border-b border-gray-100 hover:shadow-md hover:z-10 bg-white cursor-pointer transition-all relative ${!message.read ? 'bg-white' : 'bg-gray-50/30'}`}
+                                                        onClick={() => {
+                                                            setSelectedMessage(message);
+                                                            // Mark as read locally
+                                                            setMessages(prev => prev.map(m =>
+                                                                m.id === message.id ? { ...m, read: true } : m
+                                                            ));
+                                                        }}
+                                                    >
+                                                        {/* Checkbox & Star */}
+                                                        <div className="flex items-center gap-3 mr-4 text-gray-400 flex-shrink-0">
+                                                            <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" onClick={(e) => e.stopPropagation()} />
+                                                            <Star size={18} className="hover:text-yellow-400 cursor-pointer" onClick={(e) => { e.stopPropagation(); /* toggle star */ }} />
+                                                        </div>
+
+                                                        {/* Sender */}
+                                                        <div className={`w-48 font-semibold text-gray-900 truncate mr-4 ${!message.read ? 'font-bold' : 'font-normal'}`}>
+                                                            {message.sender}
+                                                        </div>
+
+                                                        {/* Subject/Preview */}
+                                                        <div className="flex-1 min-w-0 flex items-center text-sm text-gray-600">
+                                                            <span className={`text-gray-900 mr-2 ${!message.read ? 'font-bold' : 'font-medium'}`}>
+                                                                {message.subject || '(No Subject)'}
+                                                            </span>
+                                                            <span className="text-gray-400 truncate hidden sm:block">- {message.preview}</span>
+                                                        </div>
+
+                                                        {/* Date */}
+                                                        <div className={`text-xs text-gray-500 whitespace-nowrap ml-4 w-16 text-right ${!message.read ? 'font-bold text-gray-900' : ''}`}>
+                                                            {message.time}
+                                                        </div>
+
+                                                        {/* Actions (hover) */}
+                                                        <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-1 bg-white pl-2 shadow-sm rounded-l-lg border-l border-gray-100">
+                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Archive"><Archive size={16} /></button>
+                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Delete"><Trash2 size={16} /></button>
+                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Mark as unread"><Mail size={16} /></button>
+                                                        </div>
+                                                    </div>
+                                                ))
+                                        )
+                                        }
+                                    </div>
                                 </div>
-                            </div>
-                        </div>
+                            </div>)
                     )
                 ) : (
                     <div className="flex h-full flex-col items-center justify-center">

@@ -104,8 +104,12 @@ class TelegramService {
       return dialogs.map(dialog => {
         try {
             const chatEntity = dialog.entity;
+            let id = 'unknown';
+            if (dialog.id) id = dialog.id.toString();
+            else if (chatEntity && chatEntity.id) id = chatEntity.id.toString();
+            
             return {
-                id: dialog.id ? dialog.id.toString() : (chatEntity?.id ? chatEntity.id.toString() : 'unknown'),
+                id: id,
                 title: dialog.title || chatEntity?.title || chatEntity?.firstName || 'Unknown',
                 isGroup: !!dialog.isGroup,
                 isChannel: !!dialog.isChannel,
@@ -144,7 +148,17 @@ class TelegramService {
         throw new Error('Client not found');
       }
 
-      const messages = await client.getMessages(chatId, { limit });
+      // Ensure chatId is BigInt if it looks like an ID
+      let peer = chatId;
+      try {
+          if (typeof chatId === 'string' && /^-?\d+$/.test(chatId)) {
+              peer = BigInt(chatId);
+          }
+      } catch (e) {
+          console.warn('Could not cast chatId to BigInt:', chatId);
+      }
+
+      const messages = await client.getMessages(peer, { limit });
       
       return messages.map(msg => ({
         id: msg.id ? msg.id.toString() : Math.random().toString(36).substr(2, 9),

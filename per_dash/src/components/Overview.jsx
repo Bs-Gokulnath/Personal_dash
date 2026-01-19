@@ -6,7 +6,7 @@ import {
     Mail, MessageSquare, Send, ArrowUp, ArrowDown, Activity, Clock, Zap
 } from 'lucide-react';
 
-const Overview = ({ messages, connectedPlatforms, user }) => {
+const Overview = ({ messages, connectedPlatforms, user, togglePlatform }) => {
 
     // --- Data Processing ---
     const stats = useMemo(() => {
@@ -100,7 +100,18 @@ const Overview = ({ messages, connectedPlatforms, user }) => {
                     value={stats.sourceCount.Mail}
                     icon={<Mail size={24} />}
                     colorClass="bg-blue-500 text-blue-600"
-                    subtext={<span className="text-gray-500">5 unread emails</span>}
+                    subtext={
+                        connectedPlatforms.Mail ? (
+                            <span className="text-gray-500">5 unread emails</span>
+                        ) : (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); togglePlatform('Mail'); }}
+                                className="text-blue-600 font-semibold hover:underline"
+                            >
+                                Connect Gmail
+                            </button>
+                        )
+                    }
                     delay={100}
                 />
                 <StatCard
@@ -108,15 +119,37 @@ const Overview = ({ messages, connectedPlatforms, user }) => {
                     value={stats.sourceCount.Telegram}
                     icon={<Send size={24} />}
                     colorClass="bg-sky-500 text-sky-600"
-                    subtext={<span className="text-gray-500">Active in 3 groups</span>}
+                    subtext={
+                        connectedPlatforms.Telegram ? (
+                            <span className="text-gray-500">Active in 3 groups</span>
+                        ) : (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); togglePlatform('Telegram'); }}
+                                className="text-sky-600 font-semibold hover:underline"
+                            >
+                                Connect Telegram
+                            </button>
+                        )
+                    }
                     delay={200}
                 />
                 <StatCard
-                    title="Efficiency"
-                    value="94%"
-                    icon={<Zap size={24} />}
-                    colorClass="bg-amber-500 text-amber-600"
-                    subtext={<span className="text-green-600 flex items-center gap-1"><ArrowUp size={14} /> Top 5% productivity</span>}
+                    title="WhatsApp"
+                    value={stats.sourceCount.Whatsapp}
+                    icon={<MessageSquare size={24} />}
+                    colorClass="bg-green-500 text-green-600"
+                    subtext={
+                        connectedPlatforms.Whatsapp ? (
+                            <span className="text-gray-500">Connected</span>
+                        ) : (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); togglePlatform('Whatsapp'); }}
+                                className="text-green-600 font-semibold hover:underline"
+                            >
+                                Connect WhatsApp
+                            </button>
+                        )
+                    }
                     delay={300}
                 />
             </div>

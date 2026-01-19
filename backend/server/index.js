@@ -572,6 +572,10 @@ app.post('/api/telegram/auth/start', async (req, res) => {
     try {
         console.log(`📱 Starting Telegram auth for ${phoneNumber}`);
 
+        // Clear existing session and disconnect if any
+        await TelegramSession.deleteOne({ userId, isActive: true });
+        await telegramService.disconnect(userId);
+
         // Create promise for phone code that will be resolved when user submits it
         let resolveCode, resolvePassword;
         const codePromise = new Promise(resolve => { resolveCode = resolve; });
@@ -832,6 +836,10 @@ app.post('/api/whatsapp/auth/start', async (req, res) => {
     try {
         console.log(`📱 Starting WhatsApp auth for user: ${userId}`);
         
+        // Force disconnect previous session to allow connecting a new account
+        // This ensures we always get a fresh QR code
+        await whatsappService.disconnect();
+
         // Initialize WhatsApp client
         const result = await whatsappService.getQRCode();
         
@@ -1342,11 +1350,13 @@ app.post('/api/platforms/disconnect/:platform', async (req, res) => {
             }
         } else if (platform === 'Telegram') {
             await TelegramSession.deleteOne({ userId, isActive: true });
-            // Also disconnect the active client if it exists in memory
-            // (This would require exposing a disconnect method in telegramService, but for now DB removal is enough for persistent state)
+            // Also disconnect the active client in memory
+            await telegramService.disconnect(userId);
             res.json({ success: true, message: 'Telegram disconnected' });
         } else if (platform === 'Whatsapp') {
             await WhatsAppSession.deleteOne({ userId, isActive: true });
+            // Fully shut down the WhatsApp client and clear its session folder
+            await whatsappService.disconnect();
             res.json({ success: true, message: 'WhatsApp disconnected' });
         } else {
             res.status(400).json({ error: 'Unknown platform' });
