@@ -35,20 +35,44 @@ async function saveTokens(newTokens) {
 }
 
 /**
- * Reads the credentials.json file and creates an OAuth2 client.
+ * Reads the credentials.json file or environment variables and creates an OAuth2 client.
  */
 async function getAuthClient() {
   if (oauth2Client) return oauth2Client;
   
+  let client_id, client_secret, redirect_uri;
+  
+  // Try credentials.json first
   try {
     const content = await fs.readFile(CREDENTIALS_PATH);
     const credentials = JSON.parse(content);
-    const { client_secret, client_id, redirect_uris } = credentials.web || credentials.installed;
+    const creds = credentials.web || credentials.installed;
+    client_id = creds.client_id;
+    client_secret = creds.client_secret;
+    redirect_uri = creds.redirect_uris[0];
+    console.log('✅ Loaded Gmail credentials from credentials.json');
+  } catch (error) {
+    // Fall back to environment variables
+    console.log('⚠️  credentials.json not found, trying environment variables...');
+    client_id = process.env.GMAIL_CLIENT_ID;
+    client_secret = process.env.GMAIL_CLIENT_SECRET;
+    redirect_uri = process.env.GMAIL_REDIRECT_URI;
     
+    if (!client_id || !client_secret || !redirect_uri) {
+      console.error('❌ Gmail credentials missing!');
+      console.error('   Please either:');
+      console.error('   1. Add credentials.json file (recommended)');
+      console.error('   2. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REDIRECT_URI in .env');
+      return null;
+    }
+    console.log('✅ Loaded Gmail credentials from environment variables');
+  }
+  
+  try {
     oauth2Client = new google.auth.OAuth2(
       client_id, 
       client_secret, 
-      redirect_uris[0]
+      redirect_uri
     );
 
     // CRITICAL: Listen for token updates (refresh) and save them
@@ -67,7 +91,7 @@ async function getAuthClient() {
 
     return oauth2Client;
   } catch (error) {
-    console.error("Error loading credentials.json:", error);
+    console.error("Error creating OAuth2 client:", error);
     return null;
   }
 }

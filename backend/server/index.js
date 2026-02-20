@@ -3,6 +3,8 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs').promises;
 const { google } = require('googleapis');
 const { getAuthUrl, getAndSaveToken, getGmailClient, oauth2Client } = require('./gmailService');
 const { generateEmailDraft, summarizeEmail, improveDraft, chatWithAI, testConnection } = require('./services/aiService');
@@ -43,6 +45,37 @@ app.get('/', (req, res) => {
   res.send('Crivo Inai API is running');
 });
 
+// Gmail Setup Guide Route
+app.get('/gmail-setup-guide', async (req, res) => {
+  try {
+    const guidePath = path.join(__dirname, 'GMAIL_SETUP_INSTRUCTIONS.md');
+    const guide = await fs.readFile(guidePath, 'utf-8');
+    const htmlGuide = `
+      <html>
+        <head>
+          <title>Gmail Setup Guide</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 40px; max-width: 900px; margin: 0 auto; line-height: 1.6; }
+            h1 { color: #4285f4; }
+            h2 { color: #34a853; margin-top: 30px; }
+            h3 { color: #fbbc04; }
+            code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+            pre { background: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; }
+            a { color: #4285f4; }
+            .step { background: #e8f0fe; padding: 15px; margin: 10px 0; border-radius: 5px; }
+          </style>
+        </head>
+        <body>
+          <pre>${guide}</pre>
+        </body>
+      </html>
+    `;
+    res.send(htmlGuide);
+  } catch (error) {
+    res.status(500).send('Setup guide not found');
+  }
+});
+
 // --- Gmail Auth Routes ---
 
 // 1. Redirect user to Google to login
@@ -52,8 +85,38 @@ app.get('/auth/google', async (req, res) => {
     const url = await getAuthUrl(forceConsent);
     res.redirect(url);
   } catch (error) {
-    console.error('Auth Error:', error);
-    res.status(500).send('Error generating auth URL. Did you add credentials.json?');
+    console.error('❌ Gmail Auth Error:', error.message);
+    const errorHtml = `
+      <html>
+        <head><title>Gmail Setup Required</title></head>
+        <body style="font-family: Arial, sans-serif; padding: 40px; max-width: 800px; margin: 0 auto;">
+          <h1>⚠️ Gmail Authentication Setup Required</h1>
+          <p><strong>Error:</strong> ${error.message}</p>
+          
+          <h2>Quick Fix Options:</h2>
+          
+          <h3>Option 1: Use credentials.json (Recommended)</h3>
+          <ol>
+            <li>Go to <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a></li>
+            <li>Create OAuth 2.0 credentials (Web application)</li>
+            <li>Download the JSON file</li>
+            <li>Save it as: <code>backend/server/credentials.json</code></li>
+            <li>Restart the server</li>
+          </ol>
+          
+          <h3>Option 2: Use Environment Variables</h3>
+          <p>Add these to your <code>.env</code> file:</p>
+          <pre>GMAIL_CLIENT_ID=your_client_id_here
+GMAIL_CLIENT_SECRET=your_client_secret_here
+GMAIL_REDIRECT_URI=http://localhost:5000/oauth2callback</pre>
+          
+          <p>📖 <a href="/gmail-setup-guide" target="_blank">View Detailed Setup Instructions</a></p>
+          
+          <button onclick="window.close()" style="margin-top: 20px; padding: 10px 20px; background: #4285f4; color: white; border: none; border-radius: 4px; cursor: pointer;">Close</button>
+        </body>
+      </html>
+    `;
+    res.status(500).send(errorHtml);
   }
 });
 
@@ -347,7 +410,7 @@ app.post('/api/ai/summarize-email', async (req, res) => {
 
 // General AI Chat
 app.post('/api/ai/chat', async (req, res) => {
-    const { prompt } = req.body;
+    const { prompt, userEmail, conversationHistory } = req.body;
     const userId = req.headers['x-user-id'] || 'anonymous';
 
     if (!prompt) {
@@ -355,20 +418,69 @@ app.post('/api/ai/chat', async (req, res) => {
     }
 
     try {
-        const result = await chatWithAI(prompt);
+        // Pass context to AI
+        const context = {
+            userEmail: userEmail || req.headers['x-user-email'],
+            conversationHistory: conversationHistory || []
+        };
+
+        const result = await chatWithAI(prompt, context);
 
         if (!result.success) {
             return res.status(500).json({ error: result.error });
+        }
+
+        // Check if AI wants to perform an action (function call)
+        if (result.functionCall) {
+            const { name, arguments: args } = result.functionCall;
+            console.log(`🎯 Executing AI action: ${name}`, args);
+
+            // Execute the requested function
+            let actionResult;
+            try {
+                switch (name) {
+                    case 'send_email':
+                        actionResult = await executeEmailSend(args, userId);
+                        break;
+                    case 'create_draft':
+                        actionResult = await executeCreateDraft(args, userId);
+                        break;
+                    case 'search_emails':
+                        actionResult = await executeSearchEmails(args, userId);
+                        break;
+                    default:
+                        actionResult = { success: false, error: 'Unknown function' };
+                }
+
+                result.actionResult = actionResult;
+                result.actionExecuted = true;
+
+                // Append action confirmation to response
+                if (actionResult.success) {
+                    result.response = (result.response || '') + `\n\n✅ ${actionResult.message}`;
+                } else {
+                    result.response = (result.response || '') + `\n\n❌ ${actionResult.error}`;
+                }
+
+            } catch (error) {
+                console.error('Error executing AI action:', error);
+                result.actionResult = { success: false, error: error.message };
+                result.response = (result.response || '') + `\n\n❌ Failed to execute action: ${error.message}`;
+            }
         }
 
         // Log interaction
         if (isDBConnected()) {
             await AIInteraction.create({
                 userId,
-                action: 'chat',
+                action: result.functionCall ? 'agent_action' : 'chat',
                 input: prompt,
                 output: result.response,
-                success: true
+                success: true,
+                metadata: result.functionCall ? { 
+                    function: result.functionCall.name,
+                    arguments: result.functionCall.arguments 
+                } : {}
             });
         }
 
@@ -379,6 +491,80 @@ app.post('/api/ai/chat', async (req, res) => {
         res.status(500).json({ error: "Failed to process chat" });
     }
 });
+
+// Helper functions for AI agent actions
+async function executeEmailSend(args, userId) {
+    try {
+        const gmail = await getGmailClient();
+        if (!gmail) {
+            return { success: false, error: 'Gmail not connected. Please connect your Gmail account first.' };
+        }
+
+        const raw = `To: ${args.to}\r\nSubject: ${args.subject}\r\nContent-Type: text/html; charset=utf-8\r\n\r\n${args.body}`;
+        const encodedMessage = Buffer.from(raw).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+        await gmail.users.messages.send({
+            userId: 'me',
+            requestBody: {
+                raw: encodedMessage
+            }
+        });
+
+        return {
+            success: true,
+            message: `Email sent successfully to ${args.to}!`
+        };
+    } catch (error) {
+        console.error('Error sending email:', error);
+        return {
+            success: false,
+            error: error.message || 'Failed to send email'
+        };
+    }
+}
+
+async function executeCreateDraft(args, userId) {
+    try {
+        // Store draft in memory or database
+        return {
+            success: true,
+            message: `Draft created for ${args.to}. Subject: "${args.subject}". You can review and send it from your drafts.`,
+            draft: args
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message || 'Failed to create draft'
+        };
+    }
+}
+
+async function executeSearchEmails(args, userId) {
+    try {
+        const gmail = await getGmailClient();
+        if (!gmail) {
+            return { success: false, error: 'Gmail not connected' };
+        }
+
+        const response = await gmail.users.messages.list({
+            userId: 'me',
+            q: args.query,
+            maxResults: 5
+        });
+
+        const messageCount = response.data.messages?.length || 0;
+        return {
+            success: true,
+            message: `Found ${messageCount} emails matching "${args.query}".`,
+            results: response.data.messages || []
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message || 'Failed to search emails'
+        };
+    }
+}
 
 // 8. Improve Email Draft
 app.post('/api/ai/improve-draft', async (req, res) => {

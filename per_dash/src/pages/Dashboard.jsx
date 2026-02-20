@@ -305,7 +305,12 @@ const Dashboard = () => {
 
     // AI Chat State
     const [isAIChatOpen, setIsAIChatOpen] = useState(false);
-    const [aiChatMessages, setAIChatMessages] = useState([{ role: 'system', content: 'Hello! I am your Crivo Inai assistant. How can I help you today?' }]);
+    const [aiChatMessages, setAIChatMessages] = useState([
+        { 
+            role: 'assistant', 
+            content: 'Hello! I am your Crivo Inai assistant.\nHow can I help you today?\n\n💡 You can ask me to:\n• Draft or reply to emails\n• Compose messages\n• Get help with the app\n\nWhat would you like to do?' 
+        }
+    ]);
     const [aiChatInput, setAIChatInput] = useState('');
     const [isAiThinking, setIsAiThinking] = useState(false);
 
@@ -545,14 +550,34 @@ const Dashboard = () => {
         try {
             const response = await fetch('http://localhost:5000/api/ai/chat', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt: userMessage.content }),
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'x-user-email': user?.email || 'user@example.com'
+                },
+                body: JSON.stringify({ 
+                    prompt: userMessage.content,
+                    userEmail: user?.email || 'user@example.com',
+                    conversationHistory: aiChatMessages.slice(-5) // Last 5 messages for context
+                }),
             });
 
             const data = await response.json();
 
             if (data.success) {
-                setAIChatMessages(prev => [...prev, { role: 'assistant', content: data.response }]);
+                // Add AI response
+                const assistantMessage = { 
+                    role: 'assistant', 
+                    content: data.response,
+                    actionExecuted: data.actionExecuted,
+                    functionCall: data.functionCall
+                };
+                setAIChatMessages(prev => [...prev, assistantMessage]);
+
+                // If an action was performed, show visual feedback
+                if (data.actionExecuted && data.actionResult?.success) {
+                    // Could add a toast notification here
+                    console.log('✅ AI Agent performed action:', data.functionCall);
+                }
             } else {
                 setAIChatMessages(prev => [...prev, { role: 'assistant', content: "I'm sorry, I encountered an error. Please try again." }]);
             }
@@ -1946,7 +1971,7 @@ const Dashboard = () => {
                         <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
                             {aiChatMessages.map((msg, idx) => (
                                 <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                    <div className={`max-w-[80%] p-3 rounded-xl text-sm ${msg.role === 'user'
+                                    <div className={`max-w-[80%] p-3 rounded-xl text-sm whitespace-pre-wrap ${msg.role === 'user'
                                         ? 'bg-purple-600 text-white rounded-br-none'
                                         : 'bg-white text-gray-800 shadow-sm rounded-bl-none border border-gray-100'
                                         }`}>
