@@ -12,7 +12,7 @@ import {
     Bell,
     LogOut,
     Menu,
-    Settings,
+    Settings as SettingsIcon,
     User,
     RefreshCw,
     Wand2,
@@ -49,6 +49,8 @@ import WhatsAppAuthModal from '../components/WhatsAppAuthModal';
 import PlatformSelector from '../components/PlatformSelector';
 import Connectors from '../components/Connectors';
 import Overview from '../components/Overview';
+import Profile from '../components/Profile';
+import Settings from '../components/Settings';
 
 const MailSidebarItem = ({ icon, label, count, active, onClick }) => (
     <button
@@ -875,9 +877,7 @@ const Dashboard = () => {
 
         setActivePage(page);
         localStorage.setItem('activePage', page);
-        if (page !== 'Mail' && !['Whatsapp', 'Telegram'].includes(page)) {
-            setIsProfileOpen(false);
-        }
+        setIsProfileOpen(false);
         // On mobile, close sidebar when navigating
         if (window.innerWidth < 768) {
             setIsSidebarOpen(false);
@@ -1016,12 +1016,56 @@ const Dashboard = () => {
 
                         {/* Profile Dropdown */}
                         {isProfileOpen && (
-                            <div className="absolute right-0 mt-2 w-56 origin-top-right rounded-lg bg-white text-gray-700 shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none border border-gray-100">
-                                <div className="p-1">
-                                    <DropdownItem icon={<User size={16} />} label="Profile" onClick={() => handleNavClick('Profile')} />
-                                    <DropdownItem icon={<Settings size={16} />} label="Settings" onClick={() => handleNavClick('Settings')} />
-                                    <div className="my-1 h-px bg-gray-100" />
-                                    <DropdownItem icon={<LogOut size={16} />} label="Log out" onClick={handleSignOut} />
+                            <div className="absolute right-0 mt-3 w-64 origin-top-right rounded-2xl bg-white shadow-2xl border border-gray-100 overflow-hidden z-50"
+                                style={{ boxShadow: '0 20px 60px rgba(0,0,0,0.12), 0 4px 16px rgba(99,102,241,0.1)' }}>
+
+                                {/* User info header */}
+                                <div className="px-4 py-4" style={{ background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 60%, #a855f7 100%)' }}>
+                                    <div className="flex items-center gap-3">
+                                        <div className="h-11 w-11 rounded-xl overflow-hidden flex-shrink-0 border-2 border-white/30 shadow-md">
+                                            {user.photoURL ? (
+                                                <img src={user.photoURL} alt="Profile" className="h-full w-full object-cover" />
+                                            ) : (
+                                                <div className="flex h-full w-full items-center justify-center bg-white/20 text-white font-bold text-lg">
+                                                    {(user.displayName || user.email || 'U')[0].toUpperCase()}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="min-w-0">
+                                            <p className="text-sm font-semibold text-white truncate">{user.displayName || user.email.split('@')[0]}</p>
+                                            <p className="text-xs text-white/70 truncate">{user.email}</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Menu items */}
+                                <div className="p-2">
+                                    <button onClick={() => handleNavClick('Profile')}
+                                        className="flex w-full items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-gray-700 hover:bg-indigo-50 hover:text-indigo-700 transition-all group">
+                                        <div className="w-8 h-8 rounded-lg bg-gray-100 group-hover:bg-indigo-100 flex items-center justify-center transition-colors">
+                                            <User size={15} className="text-gray-500 group-hover:text-indigo-600" />
+                                        </div>
+                                        <span className="font-medium">My Profile</span>
+                                    </button>
+                                    <button onClick={() => handleNavClick('Settings')}
+                                        className="flex w-full items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-gray-700 hover:bg-indigo-50 hover:text-indigo-700 transition-all group">
+                                        <div className="w-8 h-8 rounded-lg bg-gray-100 group-hover:bg-indigo-100 flex items-center justify-center transition-colors">
+                                            <SettingsIcon size={15} className="text-gray-500 group-hover:text-indigo-600" />
+                                        </div>
+                                        <span className="font-medium">Settings</span>
+                                    </button>
+                                </div>
+
+                                <div className="mx-3 h-px bg-gray-100" />
+
+                                <div className="p-2">
+                                    <button onClick={handleSignOut}
+                                        className="flex w-full items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-red-500 hover:bg-red-50 transition-all group">
+                                        <div className="w-8 h-8 rounded-lg bg-gray-100 group-hover:bg-red-100 flex items-center justify-center transition-colors">
+                                            <LogOut size={15} className="text-gray-400 group-hover:text-red-500" />
+                                        </div>
+                                        <span className="font-medium">Sign out</span>
+                                    </button>
                                 </div>
                             </div>
                         )}
@@ -1029,7 +1073,11 @@ const Dashboard = () => {
                 </div>
             </header>
             <main className="flex-1 overflow-y-auto p-8">
-                {activePage === 'Connectors' ? (
+                {activePage === 'Profile' ? (
+                    <Profile user={user} connectedPlatforms={connectedPlatforms} onSignOut={handleSignOut} />
+                ) : activePage === 'Settings' ? (
+                    <Settings user={user} />
+                ) : activePage === 'Connectors' ? (
                     <Connectors connectedPlatforms={connectedPlatforms} togglePlatform={togglePlatform} />
                 ) : activePage === 'Dashboard' ? (
                     <Overview
@@ -2198,15 +2246,6 @@ const SubNavItem = ({ label, onClick }) => (
     </button>
 );
 
-const DropdownItem = ({ icon, label, onClick }) => (
-    <button
-        onClick={onClick}
-        className="flex w-full items-center rounded-md px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-    >
-        <span className="mr-3 text-gray-400">{icon}</span>
-        {label}
-    </button>
-);
 
 const StatCard = ({ title, value, change, isPositive }) => (
     <div className="rounded-xl bg-white p-6 shadow-sm border border-gray-100 flex flex-col justify-between h-32 hover:shadow-md transition-shadow">
