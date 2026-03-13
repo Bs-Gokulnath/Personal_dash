@@ -1,0 +1,3 @@
+PS C:\React JS\Personal_dash> cd "C:\React JS\Personal_dash\backend\server"; npm start
+
+PS C:\React JS\Personal_dash> cd "C:\React JS\Personal_dash\per_dash"; npm run dev

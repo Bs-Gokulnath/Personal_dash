@@ -138,6 +138,9 @@ const Dashboard = () => {
         });
     };
     const [mailFolder, setMailFolder] = useState('inbox');
+    const [starredIds, setStarredIds] = useState(() => {
+        try { return new Set(JSON.parse(localStorage.getItem('starredEmailIds') || '[]')); } catch { return new Set(); }
+    });
 
     // Connectors State
     const [connectedPlatforms, setConnectedPlatforms] = useState({
@@ -326,41 +329,69 @@ const Dashboard = () => {
         }
     }, [location]);
 
-    const fetchEmails = async () => {
-        if (activePage !== 'Inbox' && activePage !== 'Mail') return;
-
+    const fetchEmails = async (category = 'primary') => {
         setLoadingMessages(true);
         setErrorMessages(null);
         try {
-            const response = await fetch('http://localhost:5000/api/emails');
+            const response = await fetch(`http://localhost:5000/api/emails?category=${category}`, {
+                headers: { 'x-user-id': user?.uid || 'anonymous' }
+            });
 
             if (response.status === 401) {
-                // Session expired or invalid
                 setConnectedPlatforms(prev => ({ ...prev, Mail: false }));
-                return; // Stop processing
+                return;
             }
+            if (!response.ok) throw new Error('Failed to fetch emails');
 
-            if (!response.ok) {
-                throw new Error('Failed to fetch emails');
-            }
             const data = await response.json();
-            // Merge with existing messages, removing old Mail messages
+            // Replace Mail messages entirely on each folder/tab fetch
             setMessages(prev => [...prev.filter(m => m.source !== 'Mail'), ...data]);
         } catch (err) {
             console.error("Error fetching emails:", err);
-            // Instead of showing an error, we assume it's a connection issue
-            setErrorMessages(null);
             setConnectedPlatforms(prev => ({ ...prev, Mail: false }));
         } finally {
             setLoadingMessages(false);
         }
     };
 
+    // Determine which category to fetch based on current folder + tab
+    const getActiveEmailCategory = (folder, tab) => {
+        if (folder === 'inbox') return tab.toLowerCase();
+        return folder; // sent, drafts, starred, snoozed, purchases
+    };
+
     useEffect(() => {
+        if (!user) return;
         if (activePage === 'Inbox' || activePage === 'Mail') {
-            fetchEmails();
+            fetchEmails(getActiveEmailCategory(mailFolder, mailTab));
         }
-    }, [activePage]);
+    }, [activePage, user]);
+
+    // Re-fetch when tab changes (only relevant when in inbox folder)
+    useEffect(() => {
+        if (!user) return;
+        if ((activePage === 'Inbox' || activePage === 'Mail') && mailFolder === 'inbox') {
+            fetchEmails(mailTab.toLowerCase());
+        }
+    }, [mailTab]);
+
+    // Re-fetch when sidebar folder changes
+    useEffect(() => {
+        if (!user) return;
+        if (activePage === 'Inbox' || activePage === 'Mail') {
+            fetchEmails(getActiveEmailCategory(mailFolder, mailTab));
+        }
+    }, [mailFolder]);
+
+    const toggleStar = (e, messageId) => {
+        e.stopPropagation();
+        setStarredIds(prev => {
+            const next = new Set(prev);
+            if (next.has(messageId)) next.delete(messageId); else next.add(messageId);
+            localStorage.setItem('starredEmailIds', JSON.stringify([...next]));
+            return next;
+        });
+    };
 
     useEffect(() => {
         // Check Telegram connection on mount
@@ -397,7 +428,7 @@ const Dashboard = () => {
         try {
             const response = await fetch('http://localhost:5000/api/send-email', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'x-user-id': user?.uid || 'anonymous' },
                 body: JSON.stringify(composeData),
             });
 
@@ -498,7 +529,7 @@ const Dashboard = () => {
         try {
             const response = await fetch('http://localhost:5000/api/send-email', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'x-user-id': user?.uid || 'anonymous' },
                 body: JSON.stringify(draft),
             });
 
@@ -573,13 +604,19 @@ const Dashboard = () => {
                 };
                 setAIChatMessages(prev => [...prev, assistantMessage]);
 
-                // If an action was performed, show visual feedback
+                // If an action was performed, handle UI side effects
                 if (data.actionExecuted && data.actionResult?.success) {
-                    // Could add a toast notification here
-                    console.log('✅ AI Agent performed action:', data.functionCall);
+                    const fc = data.functionCall;
+                    if (fc?.name === 'create_draft' && fc?.arguments) {
+                        const { to, subject, body } = fc.arguments;
+                        setComposeData({ to: to || '', subject: subject || '', body: body || '' });
+                        setTimeout(() => setIsComposeOpen(true), 400);
+                    } else if (fc?.name === 'send_email') {
+                        fetchEmails();
+                    }
                 }
             } else {
-                setAIChatMessages(prev => [...prev, { role: 'assistant', content: "I'm sorry, I encountered an error. Please try again." }]);
+                setAIChatMessages(prev => [...prev, { role: 'assistant', content: "I'm having trouble right now. Please try again." }]);
             }
         } catch (error) {
             console.error('AI Chat Error:', error);
@@ -1519,13 +1556,12 @@ const Dashboard = () => {
                                     </button>
 
                                     <nav className="space-y-1 flex-1 overflow-y-auto">
-                                        <MailSidebarItem icon={<Inbox size={18} />} label="Inbox" count={messages.filter(m => m.source === 'Mail' || m.source === 'Gmail').length} active={mailFolder === 'inbox'} onClick={() => setMailFolder('inbox')} />
-                                        <MailSidebarItem icon={<Star size={18} />} label="Starred" active={mailFolder === 'starred'} onClick={() => setMailFolder('starred')} />
+                                        <MailSidebarItem icon={<Inbox size={18} />} label="Inbox" count={mailFolder === 'inbox' ? messages.filter(m => m.source === 'Mail' && !m.read).length || undefined : undefined} active={mailFolder === 'inbox'} onClick={() => setMailFolder('inbox')} />
+                                        <MailSidebarItem icon={<Star size={18} />} label="Starred" count={starredIds.size || undefined} active={mailFolder === 'starred'} onClick={() => setMailFolder('starred')} />
                                         <MailSidebarItem icon={<Clock size={18} />} label="Snoozed" active={mailFolder === 'snoozed'} onClick={() => setMailFolder('snoozed')} />
                                         <MailSidebarItem icon={<Send size={18} />} label="Sent" active={mailFolder === 'sent'} onClick={() => setMailFolder('sent')} />
-                                        <MailSidebarItem icon={<File size={18} />} label="Drafts" count={52} active={mailFolder === 'drafts'} onClick={() => setMailFolder('drafts')} />
-                                        <MailSidebarItem icon={<Package size={18} />} label="Purchases" count={27} active={mailFolder === 'purchases'} onClick={() => setMailFolder('purchases')} />
-                                        <MailSidebarItem icon={<ChevronDown size={18} />} label="More" active={false} onClick={() => { }} />
+                                        <MailSidebarItem icon={<File size={18} />} label="Drafts" count={mailFolder === 'drafts' ? messages.filter(m => m.source === 'Mail' && m.isDraft).length || undefined : undefined} active={mailFolder === 'drafts'} onClick={() => setMailFolder('drafts')} />
+                                        <MailSidebarItem icon={<Package size={18} />} label="Purchases" active={mailFolder === 'purchases'} onClick={() => setMailFolder('purchases')} />
                                     </nav>
 
                                     <div className="mt-4 pt-4 border-t border-gray-200">
@@ -1538,90 +1574,126 @@ const Dashboard = () => {
 
                                 {/* Main Content */}
                                 <div className="flex-1 flex flex-col min-w-0 bg-white">
-                                    {/* Tabs */}
-                                    <div className="flex items-center border-b border-gray-200 bg-white px-2">
-                                        <MailTab icon={<Inbox size={18} />} label="Primary" active={mailTab === 'Primary'} onClick={() => { setMailTab('Primary'); localStorage.setItem('mailTab', 'Primary'); }} color="blue" />
-                                        <MailTab icon={<Tag size={18} />} label="Promotions" active={mailTab === 'Promotions'} onClick={() => { setMailTab('Promotions'); localStorage.setItem('mailTab', 'Promotions'); }} badge="2 new" color="green" />
-                                        <MailTab icon={<Users size={18} />} label="Social" active={mailTab === 'Social'} onClick={() => { setMailTab('Social'); localStorage.setItem('mailTab', 'Social'); }} badge="1 new" color="blue" />
-                                        <MailTab icon={<AlertCircle size={18} />} label="Updates" active={mailTab === 'Updates'} onClick={() => { setMailTab('Updates'); localStorage.setItem('mailTab', 'Updates'); }} badge="1 new" color="orange" />
-                                    </div>
+                                    {/* Tabs — only shown when in inbox folder */}
+                                    {mailFolder === 'inbox' && (
+                                        <div className="flex items-center border-b border-gray-200 bg-white px-2">
+                                            <MailTab icon={<Inbox size={18} />} label="Primary" active={mailTab === 'Primary'} onClick={() => { setMailTab('Primary'); localStorage.setItem('mailTab', 'Primary'); }} color="blue" />
+                                            <MailTab icon={<Tag size={18} />} label="Promotions" active={mailTab === 'Promotions'} onClick={() => { setMailTab('Promotions'); localStorage.setItem('mailTab', 'Promotions'); }} color="green" />
+                                            <MailTab icon={<Users size={18} />} label="Social" active={mailTab === 'Social'} onClick={() => { setMailTab('Social'); localStorage.setItem('mailTab', 'Social'); }} color="blue" />
+                                            <MailTab icon={<AlertCircle size={18} />} label="Updates" active={mailTab === 'Updates'} onClick={() => { setMailTab('Updates'); localStorage.setItem('mailTab', 'Updates'); }} color="orange" />
+                                        </div>
+                                    )}
+
+                                    {/* Folder title bar when not in inbox */}
+                                    {mailFolder !== 'inbox' && (
+                                        <div className="flex items-center px-4 py-3 border-b border-gray-200 bg-white">
+                                            <span className="text-base font-semibold text-gray-800 capitalize">{mailFolder}</span>
+                                        </div>
+                                    )}
 
                                     {/* Controls Bar */}
                                     <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-gray-50/50">
                                         <div className="flex items-center gap-2">
                                             <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" />
-                                            <button onClick={fetchEmails} className="p-2 text-gray-500 hover:bg-gray-200 rounded-full" title="Refresh">
+                                            <button onClick={() => fetchEmails(getActiveEmailCategory(mailFolder, mailTab))} className="p-2 text-gray-500 hover:bg-gray-200 rounded-full" title="Refresh">
                                                 <RefreshCw size={18} className={loadingMessages ? 'animate-spin' : ''} />
-                                            </button>
-                                            <button className="p-2 text-gray-500 hover:bg-gray-200 rounded-full" title="Mark as read">
-                                                <Mail size={18} />
                                             </button>
                                         </div>
                                         <div className="text-xs text-gray-500">
-                                            1-{Math.min(50, messages.length)} of {messages.length}
+                                            {messages.filter(m => m.source === 'Mail').length} messages
                                         </div>
                                     </div>
 
                                     {/* Message List */}
                                     <div className="flex-1 overflow-y-auto">
                                         {loadingMessages ? (
-                                            <div className="p-12 text-center text-gray-500">Loading your emails...</div>
-                                        ) : messages.filter(m => m.source === 'Mail' || m.source === 'Gmail').length === 0 ? (
+                                            <div className="p-12 text-center text-gray-500">
+                                                <RefreshCw size={32} className="animate-spin mx-auto mb-3 text-gray-300" />
+                                                Loading {mailFolder === 'inbox' ? mailTab : mailFolder} emails...
+                                            </div>
+                                        ) : messages.filter(m => m.source === 'Mail').length === 0 ? (
                                             <div className="p-12 text-center text-gray-500">
                                                 <div className="mx-auto w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
-                                                    <Inbox size={32} className="text-gray-400" />
+                                                    {mailFolder === 'sent' ? <Send size={32} className="text-gray-400" /> :
+                                                     mailFolder === 'drafts' ? <File size={32} className="text-gray-400" /> :
+                                                     mailFolder === 'starred' ? <Star size={32} className="text-gray-400" /> :
+                                                     mailFolder === 'snoozed' ? <Clock size={32} className="text-gray-400" /> :
+                                                     <Inbox size={32} className="text-gray-400" />}
                                                 </div>
-                                                <p>Your inbox is empty</p>
+                                                <p className="font-medium text-gray-700 mb-1">
+                                                    {mailFolder === 'snoozed' ? 'No snoozed emails' :
+                                                     mailFolder === 'sent' ? 'No sent emails' :
+                                                     mailFolder === 'drafts' ? 'No drafts' :
+                                                     mailFolder === 'starred' ? 'No starred emails' :
+                                                     mailFolder === 'purchases' ? 'No purchase emails' :
+                                                     `No emails in ${mailTab}`}
+                                                </p>
+                                                <p className="text-sm text-gray-400">
+                                                    {mailFolder === 'snoozed' ? 'Snoozed emails will appear here' :
+                                                     mailFolder === 'sent' ? 'Emails you send will appear here' :
+                                                     mailFolder === 'drafts' ? 'Your saved drafts will appear here' :
+                                                     'Your inbox is empty'}
+                                                </p>
                                             </div>
                                         ) : (
                                             messages
-                                                .filter(m => m.source === 'Mail' || m.source === 'Gmail')
+                                                .filter(m => m.source === 'Mail')
                                                 .map((message) => (
                                                     <div
                                                         key={message.id}
-                                                        className={`group flex items-center px-4 py-3 border-b border-gray-100 hover:shadow-md hover:z-10 bg-white cursor-pointer transition-all relative ${!message.read ? 'bg-white' : 'bg-gray-50/30'}`}
+                                                        className={`group flex items-center px-4 py-3 border-b border-gray-100 hover:shadow-md hover:z-10 cursor-pointer transition-all relative ${!message.read ? 'bg-white' : 'bg-gray-50/30'}`}
                                                         onClick={() => {
                                                             setSelectedMessage(message);
-                                                            // Mark as read locally
-                                                            setMessages(prev => prev.map(m =>
-                                                                m.id === message.id ? { ...m, read: true } : m
-                                                            ));
+                                                            if (!message.read) {
+                                                                setMessages(prev => prev.map(m =>
+                                                                    m.id === message.id ? { ...m, read: true } : m
+                                                                ));
+                                                                fetch(`http://localhost:5000/api/emails/${message.id}/read`, {
+                                                                    method: 'POST',
+                                                                    headers: { 'Content-Type': 'application/json' },
+                                                                    body: JSON.stringify({ read: true })
+                                                                }).catch(() => {});
+                                                            }
                                                         }}
                                                     >
                                                         {/* Checkbox & Star */}
-                                                        <div className="flex items-center gap-3 mr-4 text-gray-400 flex-shrink-0">
+                                                        <div className="flex items-center gap-3 mr-4 flex-shrink-0">
                                                             <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4" onClick={(e) => e.stopPropagation()} />
-                                                            <Star size={18} className="hover:text-yellow-400 cursor-pointer" onClick={(e) => { e.stopPropagation(); /* toggle star */ }} />
+                                                            <Star
+                                                                size={18}
+                                                                className={`cursor-pointer transition-colors ${starredIds.has(message.id) ? 'text-yellow-400 fill-yellow-400' : 'text-gray-300 hover:text-yellow-400'}`}
+                                                                onClick={(e) => toggleStar(e, message.id)}
+                                                            />
                                                         </div>
 
                                                         {/* Sender */}
-                                                        <div className={`w-48 font-semibold text-gray-900 truncate mr-4 ${!message.read ? 'font-bold' : 'font-normal'}`}>
-                                                            {message.sender}
+                                                        <div className={`w-44 truncate mr-4 text-sm ${!message.read ? 'font-bold text-gray-900' : 'font-medium text-gray-600'}`}>
+                                                            {message.folder === 'sent' ? (message.to || 'Unknown') : message.sender}
                                                         </div>
 
                                                         {/* Subject/Preview */}
-                                                        <div className="flex-1 min-w-0 flex items-center text-sm text-gray-600">
-                                                            <span className={`text-gray-900 mr-2 ${!message.read ? 'font-bold' : 'font-medium'}`}>
+                                                        <div className="flex-1 min-w-0 flex items-center text-sm">
+                                                            <span className={`mr-2 truncate ${!message.read ? 'font-bold text-gray-900' : 'font-medium text-gray-800'}`}>
+                                                                {message.isDraft && <span className="text-red-500 mr-1">[Draft]</span>}
                                                                 {message.subject || '(No Subject)'}
                                                             </span>
-                                                            <span className="text-gray-400 truncate hidden sm:block">- {message.preview}</span>
+                                                            <span className="text-gray-400 truncate hidden md:block">– {message.preview}</span>
                                                         </div>
 
                                                         {/* Date */}
-                                                        <div className={`text-xs text-gray-500 whitespace-nowrap ml-4 w-16 text-right ${!message.read ? 'font-bold text-gray-900' : ''}`}>
+                                                        <div className={`text-xs whitespace-nowrap ml-4 w-16 text-right ${!message.read ? 'font-bold text-gray-900' : 'text-gray-500'}`}>
                                                             {message.time}
                                                         </div>
 
-                                                        {/* Actions (hover) */}
+                                                        {/* Hover actions */}
                                                         <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-1 bg-white pl-2 shadow-sm rounded-l-lg border-l border-gray-100">
-                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Archive"><Archive size={16} /></button>
-                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Delete"><Trash2 size={16} /></button>
-                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Mark as unread"><Mail size={16} /></button>
+                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Archive" onClick={(e) => e.stopPropagation()}><Archive size={16} /></button>
+                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title="Delete" onClick={(e) => e.stopPropagation()}><Trash2 size={16} /></button>
+                                                            <button className="p-2 hover:bg-gray-100 rounded-full text-gray-500 hover:text-gray-700" title={message.read ? 'Mark unread' : 'Mark read'} onClick={(e) => { e.stopPropagation(); const newRead = !message.read; setMessages(prev => prev.map(m => m.id === message.id ? { ...m, read: newRead } : m)); fetch(`http://localhost:5000/api/emails/${message.id}/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ read: newRead }) }).catch(() => {}); }}><Mail size={16} /></button>
                                                         </div>
                                                     </div>
                                                 ))
-                                        )
-                                        }
+                                        )}
                                     </div>
                                 </div>
                             </div>)
@@ -1881,9 +1953,22 @@ const Dashboard = () => {
             {/* AI Chat FAB */}
             <button
                 onClick={() => setIsAIChatOpen(!isAIChatOpen)}
-                className="fixed bottom-6 right-6 p-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-full shadow-2xl hover:scale-105 transition-transform z-50"
+                className="fixed bottom-6 right-6 z-50 group flex items-center gap-2.5 transition-all hover:scale-105"
+                style={{
+                    background: isAIChatOpen ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%)',
+                    borderRadius: isAIChatOpen ? '50%' : '50px',
+                    padding: isAIChatOpen ? '14px' : '12px 18px 12px 14px',
+                    boxShadow: '0 8px 24px rgba(99,102,241,0.45)',
+                    color: 'white',
+                }}
             >
-                {isAIChatOpen ? <X size={24} /> : <Wand2 size={24} />}
+                {isAIChatOpen
+                    ? <X size={22} />
+                    : <>
+                        <Sparkles size={20} />
+                        <span className="text-sm font-semibold pr-1">Crivo AI</span>
+                    </>
+                }
             </button>
 
             {/* Gmail Warning Modal */}
@@ -1929,7 +2014,7 @@ const Dashboard = () => {
                                 </button>
                                 <button
                                     onClick={() => {
-                                        window.location.href = 'http://localhost:5000/auth/google';
+                                        window.location.href = `http://localhost:5000/auth/google?userId=${user?.uid || 'anonymous'}`;
                                         setIsGmailWarningOpen(false);
                                         setHasReadWarning(false);
                                     }}
@@ -1960,60 +2045,129 @@ const Dashboard = () => {
 
 
             {/* AI Chat Window */}
-            {
-                isAIChatOpen && (
-                    <div className="fixed bottom-24 right-6 w-96 h-[500px] bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden z-50 border border-gray-100">
-                        <div className="p-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white flex justify-between items-center">
-                            <h3 className="font-bold flex items-center gap-2"><Wand2 size={18} /> AI Assistant</h3>
-                            <button onClick={() => setIsAIChatOpen(false)} className="hover:bg-white/20 p-1 rounded"><X size={18} /></button>
+            {isAIChatOpen && (
+                <div className="fixed bottom-24 right-6 w-[380px] flex flex-col z-50" style={{ height: 520 }}>
+                    {/* Glass card container */}
+                    <div className="flex flex-col h-full rounded-2xl overflow-hidden shadow-2xl border border-white/60" style={{ background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(20px)' }}>
+
+                        {/* Header */}
+                        <div className="relative flex items-center justify-between px-4 py-3 overflow-hidden" style={{ background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%)' }}>
+                            {/* Decorative circles */}
+                            <div className="absolute -top-4 -right-4 w-20 h-20 rounded-full opacity-20" style={{ background: 'rgba(255,255,255,0.4)' }}></div>
+                            <div className="absolute -bottom-6 -left-2 w-16 h-16 rounded-full opacity-10" style={{ background: 'rgba(255,255,255,0.4)' }}></div>
+
+                            <div className="flex items-center gap-2.5 relative z-10">
+                                <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.2)' }}>
+                                    <Sparkles size={16} className="text-white" />
+                                </div>
+                                <div>
+                                    <div className="text-white font-semibold text-sm leading-tight">Crivo AI</div>
+                                    <div className="flex items-center gap-1">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse"></div>
+                                        <span className="text-white/70 text-xs">Online</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setIsAIChatOpen(false)}
+                                className="relative z-10 w-7 h-7 rounded-lg flex items-center justify-center transition-all hover:bg-white/20"
+                            >
+                                <X size={15} className="text-white/80" />
+                            </button>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
+                        {/* Messages */}
+                        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3" style={{ background: 'linear-gradient(180deg, #f8f7ff 0%, #fafafa 100%)' }}>
                             {aiChatMessages.map((msg, idx) => (
-                                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                    <div className={`max-w-[80%] p-3 rounded-xl text-sm whitespace-pre-wrap ${msg.role === 'user'
-                                        ? 'bg-purple-600 text-white rounded-br-none'
-                                        : 'bg-white text-gray-800 shadow-sm rounded-bl-none border border-gray-100'
-                                        }`}>
+                                <div key={idx} className={`flex items-end gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                    {msg.role === 'assistant' && (
+                                        <div className="w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center mb-0.5" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)' }}>
+                                            <Sparkles size={11} className="text-white" />
+                                        </div>
+                                    )}
+                                    <div className={`max-w-[78%] px-3.5 py-2.5 text-sm whitespace-pre-wrap leading-relaxed ${
+                                        msg.role === 'user'
+                                            ? 'text-white rounded-2xl rounded-br-md'
+                                            : 'text-gray-700 rounded-2xl rounded-bl-md border border-indigo-50'
+                                        }`}
+                                        style={msg.role === 'user'
+                                            ? { background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', boxShadow: '0 2px 12px rgba(99,102,241,0.35)' }
+                                            : { background: 'white', boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }
+                                        }
+                                    >
                                         {msg.content}
+                                        {msg.functionCall && (
+                                            <div className="mt-2 pt-2 border-t border-indigo-100 flex items-center gap-1.5">
+                                                <div className="w-4 h-4 rounded bg-indigo-100 flex items-center justify-center">
+                                                    <Wand2 size={10} className="text-indigo-600" />
+                                                </div>
+                                                <span className="text-xs text-indigo-600 font-medium">Action: {msg.functionCall.name}</span>
+                                            </div>
+                                        )}
                                     </div>
+                                    {msg.role === 'user' && (
+                                        <div className="w-6 h-6 rounded-full flex-shrink-0 mb-0.5 overflow-hidden flex items-center justify-center text-white text-xs font-bold" style={{ background: 'linear-gradient(135deg, #f59e0b, #ef4444)' }}>
+                                            {user?.email?.[0]?.toUpperCase() || 'U'}
+                                        </div>
+                                    )}
                                 </div>
                             ))}
                             {isAiThinking && (
-                                <div className="flex justify-start">
-                                    <div className="bg-white p-3 rounded-xl rounded-bl-none shadow-sm border border-gray-100">
-                                        <div className="flex space-x-1">
-                                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                                            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                                <div className="flex items-end gap-2 justify-start">
+                                    <div className="w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center" style={{ background: 'linear-gradient(135deg, #6366f1, #a855f7)' }}>
+                                        <Sparkles size={11} className="text-white" />
+                                    </div>
+                                    <div className="px-4 py-3 rounded-2xl rounded-bl-md bg-white border border-indigo-50" style={{ boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}>
+                                        <div className="flex space-x-1.5 items-center">
+                                            <div className="w-2 h-2 rounded-full animate-bounce" style={{ background: '#6366f1', animationDelay: '0ms' }}></div>
+                                            <div className="w-2 h-2 rounded-full animate-bounce" style={{ background: '#8b5cf6', animationDelay: '160ms' }}></div>
+                                            <div className="w-2 h-2 rounded-full animate-bounce" style={{ background: '#a855f7', animationDelay: '320ms' }}></div>
                                         </div>
                                     </div>
                                 </div>
                             )}
                         </div>
 
-                        <div className="p-3 bg-white border-t border-gray-100">
-                            <div className="flex items-center gap-2">
+                        {/* Quick suggestions (only show when there's just the initial message) */}
+                        {aiChatMessages.length === 1 && (
+                            <div className="px-4 py-2 flex gap-2 overflow-x-auto" style={{ background: '#f8f7ff' }}>
+                                {['Draft an email', 'Search emails', 'Help'].map(suggestion => (
+                                    <button
+                                        key={suggestion}
+                                        onClick={() => { setAIChatInput(suggestion); }}
+                                        className="flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium border transition-all hover:border-indigo-400 hover:text-indigo-600"
+                                        style={{ background: 'white', borderColor: '#e0e0f0', color: '#6b7280' }}
+                                    >
+                                        {suggestion}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* Input area */}
+                        <div className="px-3 pb-3 pt-2 bg-white border-t" style={{ borderColor: '#f0eeff' }}>
+                            <div className="flex items-center gap-2 px-3 py-2 rounded-xl border" style={{ background: '#f8f7ff', borderColor: '#e8e4ff' }}>
                                 <input
                                     type="text"
                                     value={aiChatInput}
                                     onChange={(e) => setAIChatInput(e.target.value)}
                                     onKeyPress={(e) => e.key === 'Enter' && handleSendAIChat()}
-                                    placeholder="Ask me anything..."
-                                    className="flex-1 p-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                                    placeholder="Ask Crivo AI anything..."
+                                    className="flex-1 bg-transparent text-sm text-gray-700 placeholder-gray-400 focus:outline-none"
                                 />
                                 <button
                                     onClick={handleSendAIChat}
                                     disabled={!aiChatInput.trim() || isAiThinking}
-                                    className="p-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 transition-colors"
+                                    className="w-8 h-8 rounded-lg flex items-center justify-center transition-all disabled:opacity-40"
+                                    style={{ background: aiChatInput.trim() && !isAiThinking ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : '#e0e0f0' }}
                                 >
-                                    <Send size={18} />
+                                    <Send size={14} className={aiChatInput.trim() && !isAiThinking ? 'text-white' : 'text-gray-400'} />
                                 </button>
                             </div>
                         </div>
                     </div>
-                )
-            }
+                </div>
+            )}
 
         </div >
     );

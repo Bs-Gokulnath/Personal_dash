@@ -6,7 +6,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs').promises;
 const { google } = require('googleapis');
-const { getAuthUrl, getAndSaveToken, getGmailClient, oauth2Client } = require('./gmailService');
+const { getAuthUrl, getAndSaveToken, getGmailClient, isGmailConnected, disconnectGmail } = require('./gmailService');
 const { generateEmailDraft, summarizeEmail, improveDraft, chatWithAI, testConnection } = require('./services/aiService');
 const telegramService = require('./services/telegramService');
 const whatsappService = require('./services/whatsappService');
@@ -81,8 +81,8 @@ app.get('/gmail-setup-guide', async (req, res) => {
 // 1. Redirect user to Google to login
 app.get('/auth/google', async (req, res) => {
   try {
-    const forceConsent = req.query.force === 'true';
-    const url = await getAuthUrl(forceConsent);
+    const userId = req.query.userId || 'anonymous';
+    const url = await getAuthUrl(userId);
     res.redirect(url);
   } catch (error) {
     console.error('❌ Gmail Auth Error:', error.message);
@@ -122,12 +122,11 @@ GMAIL_REDIRECT_URI=http://localhost:5000/oauth2callback</pre>
 
 // 2. Callback URL where Google redirects back with a code
 app.get('/auth/google/callback', async (req, res) => {
-  const { code } = req.query;
+  const { code, state: userId } = req.query;
   if (!code) return res.status(400).send('No code provided');
 
   try {
-    await getAndSaveToken(code);
-    // Redirect back to the frontend dashboard with Inbox page specified
+    await getAndSaveToken(code, userId || 'anonymous');
     res.redirect('http://localhost:5173?page=Inbox');
   } catch (error) {
     console.error('Token Error:', error);
@@ -138,71 +137,101 @@ app.get('/auth/google/callback', async (req, res) => {
 // 3. Get emails endpoint
 app.get('/api/emails', async (req, res) => {
   try {
-    const gmail = await getGmailClient();
+    const userId = req.headers['x-user-id'] || 'anonymous';
+    const gmail = await getGmailClient(userId);
     if (!gmail) {
       return res.status(401).json({ error: 'Not authenticated. Go to http://localhost:5000/auth/google' });
     }
 
-    const response = await gmail.users.messages.list({
-      userId: 'me',
-      maxResults: 50,
-      q: 'category:primary'
-    });
+    const category = req.query.category || 'primary';
 
-    const messages = response.data.messages || [];
-    
     // Helper to decode base64url
     const decodeBase64 = (data) => {
       if (!data) return '';
-      const buff = Buffer.from(data, 'base64');
-      return buff.toString('utf-8');
+      return Buffer.from(data, 'base64').toString('utf-8');
     };
 
-    // Helper to find body in parts
+    // Helper to find body in parts recursively
     const getBody = (payload) => {
-      if (payload.body && payload.body.data) {
-        return decodeBase64(payload.body.data);
-      }
+      if (payload.body && payload.body.data) return decodeBase64(payload.body.data);
       if (payload.parts) {
-        // Prefer HTML, fallback to text
         const htmlPart = payload.parts.find(p => p.mimeType === 'text/html');
         if (htmlPart) return getBody(htmlPart);
-        
         const textPart = payload.parts.find(p => p.mimeType === 'text/plain');
         if (textPart) return getBody(textPart);
-        
-        // Recursively check nested parts
-        for (const part of payload.parts) {
-            const body = getBody(part);
-            if (body) return body;
-        }
+        for (const part of payload.parts) { const b = getBody(part); if (b) return b; }
       }
       return '';
     };
 
-    // Fetch details for each message
-    const fullMessages = await Promise.all(messages.map(async (msg) => {
-      const details = await gmail.users.messages.get({
-        userId: 'me',
-        id: msg.id,
-      });
-      
+    // Map a Gmail message detail to our format
+    const formatMessage = (details, labelOverride) => {
       const headers = details.data.payload.headers;
-      const subject = headers.find(h => h.name === 'Subject')?.value || 'No Subject';
-      const from = headers.find(h => h.name === 'From')?.value || 'Unknown';
-      const snippet = details.data.snippet;
-      const body = getBody(details.data.payload);
-      const internalDate = new Date(parseInt(details.data.internalDate)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
       return {
-        id: msg.id,
+        id: details.data.id,
         source: 'Mail',
-        sender: from,
-        preview: snippet,
-        time: internalDate,
-        subject: subject,
-        body: body
+        sender: headers.find(h => h.name === 'From')?.value || 'Unknown',
+        to: headers.find(h => h.name === 'To')?.value || '',
+        preview: details.data.snippet,
+        time: new Date(parseInt(details.data.internalDate)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        date: new Date(parseInt(details.data.internalDate)).toLocaleDateString(),
+        subject: headers.find(h => h.name === 'Subject')?.value || 'No Subject',
+        body: getBody(details.data.payload),
+        labels: details.data.labelIds || [],
+        read: !(details.data.labelIds || []).includes('UNREAD'),
+        folder: labelOverride || category
       };
+    };
+
+    // Handle drafts separately — uses a different Gmail API
+    if (category === 'drafts') {
+      const draftsResponse = await gmail.users.drafts.list({ userId: 'me', maxResults: 50 });
+      const draftItems = draftsResponse.data.drafts || [];
+      const fullDrafts = await Promise.all(draftItems.map(async (d) => {
+        const details = await gmail.users.drafts.get({ userId: 'me', id: d.id, format: 'full' });
+        const msg = details.data.message;
+        if (!msg || !msg.payload) return null;
+        const headers = msg.payload.headers || [];
+        return {
+          id: d.id,
+          source: 'Mail',
+          sender: headers.find(h => h.name === 'From')?.value || 'Me (Draft)',
+          to: headers.find(h => h.name === 'To')?.value || '',
+          preview: msg.snippet || '',
+          time: new Date(parseInt(msg.internalDate)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          date: new Date(parseInt(msg.internalDate)).toLocaleDateString(),
+          subject: headers.find(h => h.name === 'Subject')?.value || '(No Subject — Draft)',
+          body: getBody(msg.payload),
+          labels: msg.labelIds || [],
+          read: true,
+          folder: 'drafts',
+          isDraft: true,
+          draftId: d.id
+        };
+      }));
+      return res.json(fullDrafts.filter(Boolean));
+    }
+
+    // Build list params based on category
+    const listParams = { userId: 'me', maxResults: 50 };
+    switch (category) {
+      case 'primary':    listParams.q = 'category:primary'; break;
+      case 'promotions': listParams.q = 'category:promotions'; break;
+      case 'social':     listParams.q = 'category:social'; break;
+      case 'updates':    listParams.q = 'category:updates'; break;
+      case 'purchases':  listParams.q = 'category:purchases'; break;
+      case 'starred':    listParams.labelIds = ['STARRED']; break;
+      case 'sent':       listParams.labelIds = ['SENT']; break;
+      case 'snoozed':    listParams.q = 'label:snoozed'; break;
+      default:           listParams.q = 'category:primary';
+    }
+
+    const response = await gmail.users.messages.list(listParams);
+    const messages = response.data.messages || [];
+
+    const fullMessages = await Promise.all(messages.map(async (msg) => {
+      const details = await gmail.users.messages.get({ userId: 'me', id: msg.id });
+      return formatMessage(details);
     }));
 
     res.json(fullMessages);
@@ -213,9 +242,36 @@ app.get('/api/emails', async (req, res) => {
   }
 });
 
+// 4a. Mark email as read/unread
+app.post('/api/emails/:id/read', async (req, res) => {
+  try {
+    const userId = req.headers['x-user-id'] || 'anonymous';
+    const gmail = await getGmailClient(userId);
+    if (!gmail) return res.status(401).json({ error: 'Not authenticated' });
+
+    const { id } = req.params;
+    const { read } = req.body; // true = mark read, false = mark unread
+
+    await gmail.users.messages.modify({
+      userId: 'me',
+      id,
+      requestBody: {
+        addLabelIds: read ? [] : ['UNREAD'],
+        removeLabelIds: read ? ['UNREAD'] : []
+      }
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Mark read error:', error);
+    res.status(500).json({ error: 'Failed to update read status' });
+  }
+});
+
 // 4. Send Email Endpoint
 app.post('/api/send-email', async (req, res) => {
     const { to, subject, body } = req.body;
+    const userId = req.headers['x-user-id'] || 'anonymous';
 
     if (!to || !subject || !body) {
         return res.status(400).json({ error: "Missing required fields: to, subject, body" });
@@ -223,7 +279,7 @@ app.post('/api/send-email', async (req, res) => {
 
     try {
         // Get authenticated Gmail client
-        const gmail = await getGmailClient();
+        const gmail = await getGmailClient(userId);
         if (!gmail) {
             return res.status(401).json({ error: "Not authenticated. Please authenticate first." });
         }
@@ -417,85 +473,49 @@ app.post('/api/ai/chat', async (req, res) => {
         return res.status(400).json({ error: "prompt is required" });
     }
 
-    try {
-        // Pass context to AI
-        const context = {
-            userEmail: userEmail || req.headers['x-user-email'],
-            conversationHistory: conversationHistory || []
-        };
+    const context = {
+        userEmail: userEmail || req.headers['x-user-email'],
+        conversationHistory: conversationHistory || []
+    };
 
-        const result = await chatWithAI(prompt, context);
+    // chatWithAI always returns { success: true, response: string } — never throws
+    let result = await chatWithAI(prompt, context).catch(err => {
+        console.error('chatWithAI error:', err.message);
+        return { success: true, response: "I couldn't process that. Please try again." };
+    });
 
-        if (!result.success) {
-            return res.status(500).json({ error: result.error });
+    // If AI wants to call a function (agent action)
+    if (result.functionCall) {
+        const fcName = result.functionCall.name;
+        const fcArgs = result.functionCall.arguments || {};
+        console.log('AI action:', fcName, fcArgs);
+
+        let actionResult = { success: false, error: 'Unknown action' };
+
+        if (fcName === 'send_email') {
+            actionResult = await executeEmailSend(fcArgs, userId).catch(e => ({ success: false, error: e.message }));
+        } else if (fcName === 'create_draft') {
+            actionResult = await executeCreateDraft(fcArgs, userId).catch(e => ({ success: false, error: e.message }));
+        } else if (fcName === 'search_emails') {
+            actionResult = await executeSearchEmails(fcArgs, userId).catch(e => ({ success: false, error: e.message }));
         }
 
-        // Check if AI wants to perform an action (function call)
-        if (result.functionCall) {
-            const { name, arguments: args } = result.functionCall;
-            console.log(`🎯 Executing AI action: ${name}`, args);
+        result.actionResult = actionResult;
+        result.actionExecuted = true;
 
-            // Execute the requested function
-            let actionResult;
-            try {
-                switch (name) {
-                    case 'send_email':
-                        actionResult = await executeEmailSend(args, userId);
-                        break;
-                    case 'create_draft':
-                        actionResult = await executeCreateDraft(args, userId);
-                        break;
-                    case 'search_emails':
-                        actionResult = await executeSearchEmails(args, userId);
-                        break;
-                    default:
-                        actionResult = { success: false, error: 'Unknown function' };
-                }
-
-                result.actionResult = actionResult;
-                result.actionExecuted = true;
-
-                // Append action confirmation to response
-                if (actionResult.success) {
-                    result.response = (result.response || '') + `\n\n✅ ${actionResult.message}`;
-                } else {
-                    result.response = (result.response || '') + `\n\n❌ ${actionResult.error}`;
-                }
-
-            } catch (error) {
-                console.error('Error executing AI action:', error);
-                result.actionResult = { success: false, error: error.message };
-                result.response = (result.response || '') + `\n\n❌ Failed to execute action: ${error.message}`;
-            }
-        }
-
-        // Log interaction
-        if (isDBConnected()) {
-            await AIInteraction.create({
-                userId,
-                action: result.functionCall ? 'agent_action' : 'chat',
-                input: prompt,
-                output: result.response,
-                success: true,
-                metadata: result.functionCall ? { 
-                    function: result.functionCall.name,
-                    arguments: result.functionCall.arguments 
-                } : {}
-            });
-        }
-
-        res.json(result);
-
-    } catch (error) {
-        console.error("Error in AI chat:", error);
-        res.status(500).json({ error: "Failed to process chat" });
+        const suffix = actionResult.success
+            ? `\n\n✅ ${actionResult.message}`
+            : `\n\n❌ ${actionResult.error}`;
+        result.response = (result.response || '') + suffix;
     }
+
+    res.json(result);
 });
 
 // Helper functions for AI agent actions
 async function executeEmailSend(args, userId) {
     try {
-        const gmail = await getGmailClient();
+        const gmail = await getGmailClient(userId);
         if (!gmail) {
             return { success: false, error: 'Gmail not connected. Please connect your Gmail account first.' };
         }
@@ -541,7 +561,7 @@ async function executeCreateDraft(args, userId) {
 
 async function executeSearchEmails(args, userId) {
     try {
-        const gmail = await getGmailClient();
+        const gmail = await getGmailClient(userId);
         if (!gmail) {
             return { success: false, error: 'Gmail not connected' };
         }
@@ -975,12 +995,11 @@ app.get('/api/telegram/status', async (req, res) => {
 // 18. Check All Platforms Status
 app.get('/api/platforms/status', async (req, res) => {
     const userId = req.headers['x-user-id'] || 'anonymous';
-    
+
     // Check Gmail
     let gmailConnected = false;
     try {
-        const gmail = await getGmailClient();
-        gmailConnected = !!gmail;
+        gmailConnected = await isGmailConnected(userId);
     } catch (e) {
         console.error("Error checking Gmail status:", e);
         gmailConnected = false;
@@ -1021,39 +1040,51 @@ app.post('/api/whatsapp/auth/start', async (req, res) => {
 
     try {
         console.log(`📱 Starting WhatsApp auth for user: ${userId}`);
-        
-        // Force disconnect previous session to allow connecting a new account
-        // This ensures we always get a fresh QR code
-        await whatsappService.disconnect();
 
-        // Initialize WhatsApp client
+        const status = await whatsappService.getStatus();
+
+        // Only disconnect if already connected (to allow re-auth).
+        // Do NOT disconnect if the client is currently initializing — that would
+        // kill the Puppeteer browser mid-start and prevent QR from ever appearing.
+        if (status.connected) {
+            console.log('📱 Already connected, disconnecting to allow re-auth...');
+            await whatsappService.disconnect();
+        } else if (!status.hasClient) {
+            console.log('📱 No client exists, starting fresh...');
+        } else {
+            console.log('📱 Client is initializing, waiting for QR...');
+        }
+
+        // Get QR / status (triggers initialize() if client doesn't exist yet)
         const result = await whatsappService.getQRCode();
-        
+
         if (result.ready) {
-            return res.json({
-                success: true,
-                message: "WhatsApp already connected",
-                connected: true
-            });
+            return res.json({ success: true, connected: true, message: "WhatsApp already connected" });
         }
 
         if (result.qr) {
-            return res.json({
-                success: true,
-                qr: result.qr,
-                message: "Scan this QR code with WhatsApp"
-            });
+            return res.json({ success: true, qr: result.qr, message: "Scan this QR code with WhatsApp" });
         }
 
-        // If neither, still initializing
-        res.json({
-            success: true,
-            message: "Initializing WhatsApp client...",
-            initializing: true
-        });
+        // Still initializing — frontend should poll /api/whatsapp/qr
+        res.json({ success: true, initializing: true, message: "Initializing WhatsApp client..." });
 
     } catch (error) {
         console.error("Error starting WhatsApp auth:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 19b. Poll for QR Code (called by frontend while initializing)
+app.get('/api/whatsapp/qr', async (req, res) => {
+    try {
+        const result = await whatsappService.getQRCode();
+        if (result.ready) return res.json({ connected: true });
+        if (result.qr) return res.json({ qr: result.qr });
+        if (result.error) return res.json({ error: result.error });
+        res.json({ initializing: true });
+    } catch (error) {
+        console.error("Error polling WhatsApp QR:", error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1518,22 +1549,8 @@ app.post('/api/platforms/disconnect/:platform', async (req, res) => {
 
     try {
         if (platform === 'Mail') {
-            const tokenPath = require('path').join(__dirname, 'token.json');
-            try {
-                await require('fs').promises.unlink(tokenPath);
-                // Also reset the oauth client credentials
-                const { oauth2Client } = require('./gmailService');
-                if (oauth2Client) {
-                    oauth2Client.setCredentials({});
-                }
-                res.json({ success: true, message: 'Gmail disconnected' });
-            } catch (err) {
-                if (err.code === 'ENOENT') {
-                    res.json({ success: true, message: 'Gmail was already disconnected' });
-                } else {
-                    throw err;
-                }
-            }
+            await disconnectGmail(userId);
+            res.json({ success: true, message: 'Gmail disconnected' });
         } else if (platform === 'Telegram') {
             await TelegramSession.deleteOne({ userId, isActive: true });
             // Also disconnect the active client in memory

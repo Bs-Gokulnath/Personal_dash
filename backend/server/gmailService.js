@@ -2,163 +2,145 @@ const fs = require('fs').promises;
 const path = require('path');
 const { google } = require('googleapis');
 
-// If modifying these scopes, delete token.json.
+// If modifying these scopes, delete all token_*.json files.
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.send'
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.modify'
 ];
-const TOKEN_PATH = path.join(__dirname, 'token.json');
+
 const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
 
-// Global OAuth2 client instance
-let oauth2Client = null;
+// Per-user OAuth2 clients: Map<userId, oauth2Client>
+const userClients = new Map();
 
-/**
- * Helper to save tokens, merging with existing ones to preserve refresh_token.
- */
-async function saveTokens(newTokens) {
+function getTokenPath(userId) {
+  return path.join(__dirname, `token_${userId}.json`);
+}
+
+async function saveTokens(userId, newTokens) {
   try {
-    let currentTokens = {};
-    try {
-      const content = await fs.readFile(TOKEN_PATH);
-      currentTokens = JSON.parse(content);
-    } catch (e) {
-      // File might not exist yet
-    }
-    
-    const mergedTokens = { ...currentTokens, ...newTokens };
-    await fs.writeFile(TOKEN_PATH, JSON.stringify(mergedTokens));
-    console.log('Tokens updated and saved to disk');
+    const tokenPath = getTokenPath(userId);
+    let current = {};
+    try { current = JSON.parse(await fs.readFile(tokenPath)); } catch {}
+    await fs.writeFile(tokenPath, JSON.stringify({ ...current, ...newTokens }));
   } catch (error) {
-    console.error('Error saving tokens:', error);
+    console.error('Error saving tokens for user', userId, error);
   }
 }
 
-/**
- * Reads the credentials.json file or environment variables and creates an OAuth2 client.
- */
-async function getAuthClient() {
-  if (oauth2Client) return oauth2Client;
-  
-  let client_id, client_secret, redirect_uri;
-  
-  // Try credentials.json first
+async function getCredentials() {
   try {
     const content = await fs.readFile(CREDENTIALS_PATH);
     const credentials = JSON.parse(content);
     const creds = credentials.web || credentials.installed;
-    client_id = creds.client_id;
-    client_secret = creds.client_secret;
-    redirect_uri = creds.redirect_uris[0];
     console.log('✅ Loaded Gmail credentials from credentials.json');
-  } catch (error) {
-    // Fall back to environment variables
-    console.log('⚠️  credentials.json not found, trying environment variables...');
-    client_id = process.env.GMAIL_CLIENT_ID;
-    client_secret = process.env.GMAIL_CLIENT_SECRET;
-    redirect_uri = process.env.GMAIL_REDIRECT_URI;
-    
+    return { client_id: creds.client_id, client_secret: creds.client_secret, redirect_uri: creds.redirect_uris[0] };
+  } catch {
+    const client_id = process.env.GMAIL_CLIENT_ID;
+    const client_secret = process.env.GMAIL_CLIENT_SECRET;
+    const redirect_uri = process.env.GMAIL_REDIRECT_URI;
     if (!client_id || !client_secret || !redirect_uri) {
       console.error('❌ Gmail credentials missing!');
-      console.error('   Please either:');
-      console.error('   1. Add credentials.json file (recommended)');
-      console.error('   2. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, and GMAIL_REDIRECT_URI in .env');
       return null;
     }
     console.log('✅ Loaded Gmail credentials from environment variables');
-  }
-  
-  try {
-    oauth2Client = new google.auth.OAuth2(
-      client_id, 
-      client_secret, 
-      redirect_uri
-    );
-
-    // CRITICAL: Listen for token updates (refresh) and save them
-    oauth2Client.on('tokens', (tokens) => {
-      console.log('OAuth2 Client received new tokens (refresh)');
-      saveTokens(tokens);
-    });
-
-    // Load existing token if available
-    try {
-      const token = await fs.readFile(TOKEN_PATH);
-      oauth2Client.setCredentials(JSON.parse(token));
-    } catch (err) {
-      // No token yet, that's okay
-    }
-
-    return oauth2Client;
-  } catch (error) {
-    console.error("Error creating OAuth2 client:", error);
-    return null;
+    return { client_id, client_secret, redirect_uri };
   }
 }
 
-/**
- * Generates the URL for the user to authorize the app.
- */
-async function getAuthUrl(forceConsent = false) {
-  const authClient = await getAuthClient();
-  if (!authClient) throw new Error('Could not create auth client');
+async function getAuthClient(userId) {
+  if (userClients.has(userId)) return userClients.get(userId);
 
-  const authUrlOptions = {
+  const creds = await getCredentials();
+  if (!creds) return null;
+
+  const client = new google.auth.OAuth2(creds.client_id, creds.client_secret, creds.redirect_uri);
+
+  client.on('tokens', (tokens) => {
+    saveTokens(userId, tokens);
+  });
+
+  // Load existing token if available
+  try {
+    const token = JSON.parse(await fs.readFile(getTokenPath(userId)));
+    client.setCredentials(token);
+  } catch {}
+
+  userClients.set(userId, client);
+  return client;
+}
+
+async function getAuthUrl(userId) {
+  const creds = await getCredentials();
+  if (!creds) throw new Error('Could not load Gmail credentials');
+
+  const client = new google.auth.OAuth2(creds.client_id, creds.client_secret, creds.redirect_uri);
+  return client.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
-  };
-
-  // Force consent screen to show even if previously authorized
-  if (forceConsent) {
-    authUrlOptions.prompt = 'consent';
-  }
-
-  return authClient.generateAuthUrl(authUrlOptions);
+    prompt: 'consent',
+    state: userId  // pass userId through OAuth so we know who authenticated
+  });
 }
 
-/**
- * Exchanges the auth code for a token and saves it.
- */
-async function getAndSaveToken(code) {
-  const authClient = await getAuthClient();
-  if (!authClient) throw new Error('Could not create auth client');
+async function getAndSaveToken(code, userId) {
+  const client = await getAuthClient(userId);
+  if (!client) throw new Error('Could not create auth client');
 
-  const { tokens } = await authClient.getToken(code);
-  authClient.setCredentials(tokens);
-  
-  await fs.writeFile(TOKEN_PATH, JSON.stringify(tokens));
-  console.log('Token stored to', TOKEN_PATH);
-  
+  const { tokens } = await client.getToken(code);
+  client.setCredentials(tokens);
+  await fs.writeFile(getTokenPath(userId), JSON.stringify(tokens));
+  console.log(`Token stored for user: ${userId}`);
   return tokens;
 }
 
-/**
- * Gets a fully authorized Gmail client.
- */
-async function getGmailClient() {
-  const authClient = await getAuthClient();
-  if (!authClient) return null;
+async function getGmailClient(userId) {
+  if (!userId) return null;
+  const client = await getAuthClient(userId);
+  if (!client) return null;
 
-  // Check if we already have valid credentials in memory
-  if (authClient.credentials && Object.keys(authClient.credentials).length > 0) {
-    return google.gmail({ version: 'v1', auth: authClient });
+  if (client.credentials && Object.keys(client.credentials).length > 0) {
+    return google.gmail({ version: 'v1', auth: client });
   }
 
-  // Fallback: Try to load from disk if not in memory (e.g. if getAuthClient didn't load it for some reason)
-  try {
-    const token = await fs.readFile(TOKEN_PATH);
-    authClient.setCredentials(JSON.parse(token));
-    return google.gmail({ version: 'v1', auth: authClient });
-  } catch (error) {
-    return null; // No token found, user needs to auth
+  // Try user-specific token first, then fall back to legacy token.json
+  const tokenPaths = [getTokenPath(userId), path.join(__dirname, 'token.json')];
+  for (const tokenPath of tokenPaths) {
+    try {
+      const token = JSON.parse(await fs.readFile(tokenPath));
+      client.setCredentials(token);
+      // Migrate legacy token to user-specific file
+      if (tokenPath.endsWith('token.json')) {
+        await fs.writeFile(getTokenPath(userId), JSON.stringify(token)).catch(() => {});
+        console.log(`Migrated legacy token.json to token_${userId}.json`);
+      }
+      return google.gmail({ version: 'v1', auth: client });
+    } catch {}
   }
+  return null;
+}
+
+async function isGmailConnected(userId) {
+  if (!userId) return false;
+  for (const p of [getTokenPath(userId), path.join(__dirname, 'token.json')]) {
+    try { await fs.access(p); return true; } catch {}
+  }
+  return false;
+}
+
+async function disconnectGmail(userId) {
+  if (!userId) return;
+  try { await fs.unlink(getTokenPath(userId)); } catch {}
+  userClients.delete(userId);
 }
 
 module.exports = {
   getAuthUrl,
   getAndSaveToken,
   getGmailClient,
-  get oauth2Client() {
-    return oauth2Client;
-  }
+  isGmailConnected,
+  disconnectGmail,
+  // legacy compat
+  get oauth2Client() { return userClients.values().next().value || null; }
 };

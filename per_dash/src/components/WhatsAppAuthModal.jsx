@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, Loader2, CheckCircle, QrCode } from 'lucide-react';
 import QRCode from 'qrcode';
 
@@ -8,67 +8,115 @@ const WhatsAppAuthModal = ({ isOpen, onClose, onSuccess }) => {
     const [error, setError] = useState(null);
     const [connected, setConnected] = useState(false);
     const [checkingStatus, setCheckingStatus] = useState(false);
+    // Keep refs to active intervals/timeouts so we can clean them up on close
+    const pollIntervalRef = useRef(null);
+    const pollTimeoutRef = useRef(null);
 
     useEffect(() => {
         if (isOpen) {
             startAuth();
         } else {
-            // Reset state when modal closes
+            // Clean up polling and reset state when modal closes
+            clearInterval(pollIntervalRef.current);
+            clearTimeout(pollTimeoutRef.current);
             setQrCodeImage(null);
             setError(null);
             setConnected(false);
+            setCheckingStatus(false);
         }
     }, [isOpen]);
+
+    const renderQR = async (qrData) => {
+        const qrImage = await QRCode.toDataURL(qrData, {
+            width: 300,
+            margin: 2,
+            color: { dark: '#000000', light: '#FFFFFF' }
+        });
+        setQrCodeImage(qrImage);
+        setLoading(false);
+        startStatusCheck();
+    };
 
     const startAuth = async () => {
         setLoading(true);
         setError(null);
+        setQrCodeImage(null);
 
         try {
             const response = await fetch('http://localhost:5000/api/whatsapp/auth/start', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-user-id': 'anonymous'
-                }
+                headers: { 'Content-Type': 'application/json', 'x-user-id': 'anonymous' }
             });
 
             const data = await response.json();
 
             if (data.connected) {
                 setConnected(true);
-                setTimeout(() => {
-                    onSuccess();
-                    onClose();
-                }, 1500);
+                setLoading(false);
+                setTimeout(() => { onSuccess(); onClose(); }, 1500);
                 return;
             }
 
             if (data.qr) {
-                // Generate QR code image
-                const qrImage = await QRCode.toDataURL(data.qr, {
-                    width: 300,
-                    margin: 2,
-                    color: {
-                        dark: '#000000',
-                        light: '#FFFFFF'
-                    }
-                });
-                setQrCodeImage(qrImage);
+                await renderQR(data.qr);
+                return;
+            }
 
-                // Start checking for connection
-                startStatusCheck();
-            } else if (data.initializing) {
-                // Wait a bit and try again
-                setTimeout(startAuth, 2000);
+            if (data.initializing) {
+                // Client is starting up — poll /api/whatsapp/qr instead of
+                // calling auth/start again (which would destroy the initializing client)
+                pollForQR();
             }
 
         } catch (err) {
             console.error('WhatsApp auth error:', err);
             setError(err.message || 'Failed to initialize WhatsApp connection');
-        } finally {
             setLoading(false);
         }
+    };
+
+    const pollForQR = () => {
+        // Poll every 2.5 seconds waiting for Puppeteer to start and QR to appear
+        pollIntervalRef.current = setInterval(async () => {
+            try {
+                const response = await fetch('http://localhost:5000/api/whatsapp/qr');
+                const data = await response.json();
+
+                if (data.connected) {
+                    clearInterval(pollIntervalRef.current);
+                    clearTimeout(pollTimeoutRef.current);
+                    setConnected(true);
+                    setLoading(false);
+                    setTimeout(() => { onSuccess(); onClose(); }, 1500);
+                    return;
+                }
+
+                if (data.qr) {
+                    clearInterval(pollIntervalRef.current);
+                    clearTimeout(pollTimeoutRef.current);
+                    await renderQR(data.qr);
+                    return;
+                }
+
+                if (data.error) {
+                    clearInterval(pollIntervalRef.current);
+                    clearTimeout(pollTimeoutRef.current);
+                    setLoading(false);
+                    setError('WhatsApp failed to start: ' + data.error);
+                    return;
+                }
+                // else still initializing — keep polling
+            } catch (err) {
+                console.error('QR poll error:', err);
+            }
+        }, 2500);
+
+        // Give up after 2 minutes
+        pollTimeoutRef.current = setTimeout(() => {
+            clearInterval(pollIntervalRef.current);
+            setLoading(false);
+            setError('Initialization timed out. Please try again.');
+        }, 120000);
     };
 
     const startStatusCheck = () => {
@@ -82,24 +130,17 @@ const WhatsAppAuthModal = ({ isOpen, onClose, onSuccess }) => {
                     clearInterval(interval);
                     setConnected(true);
                     setCheckingStatus(false);
-
-                    setTimeout(() => {
-                        onSuccess();
-                        onClose();
-                    }, 1500);
+                    setTimeout(() => { onSuccess(); onClose(); }, 1500);
                 }
             } catch (err) {
                 console.error('Status check error:', err);
             }
-        }, 3000); // Check every 3 seconds
+        }, 3000);
 
         // Stop checking after 5 minutes
         setTimeout(() => {
             clearInterval(interval);
             setCheckingStatus(false);
-            if (!connected) {
-                setError('Connection timeout. Please try again.');
-            }
         }, 300000);
     };
 

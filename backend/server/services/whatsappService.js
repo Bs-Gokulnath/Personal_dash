@@ -1,11 +1,35 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const path = require('path');
+const fs = require('fs');
+
+// Find installed Chrome/Chromium on Windows — Puppeteer's bundled Chromium often
+// can't reach web.whatsapp.com due to Windows network restrictions. Using the
+// system Chrome bypasses this issue.
+const findSystemChrome = () => {
+    if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
+        return process.env.CHROME_PATH;
+    }
+    const candidates = [
+        process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        process.env.LOCALAPPDATA + '\\Chromium\\Application\\chrome.exe',
+        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+        process.env.LOCALAPPDATA + '\\Microsoft\\Edge\\Application\\msedge.exe',
+    ];
+    for (const p of candidates) {
+        try { if (p && fs.existsSync(p)) return p; } catch {}
+    }
+    return undefined; // fall back to bundled Chromium
+};
 
 class WhatsAppService {
     constructor() {
         this.client = null;
         this.isReady = false;
         this.qrCode = null;
+        this.isInitializing = false; // Prevent concurrent Chrome launches
+        this.initError = null;       // Track last initialization error
         this.sessionPath = path.join(__dirname, '..', '.wwebjs_auth');
     }
 
@@ -15,7 +39,15 @@ class WhatsAppService {
             return;
         }
 
-        console.log('Initializing WhatsApp client...');
+        if (this.isInitializing) {
+            console.log('WhatsApp client already initializing, skipping duplicate call');
+            return;
+        }
+
+        const chromePath = findSystemChrome();
+        console.log(`Initializing WhatsApp client... Chrome: ${chromePath || 'bundled Chromium'}`);
+        this.isInitializing = true;
+        this.initError = null;
 
         this.client = new Client({
             authStrategy: new LocalAuth({
@@ -23,6 +55,7 @@ class WhatsAppService {
             }),
             puppeteer: {
                 headless: true,
+                executablePath: chromePath,
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
@@ -30,44 +63,45 @@ class WhatsAppService {
                     '--disable-accelerated-2d-canvas',
                     '--no-first-run',
                     '--no-zygote',
-                    '--disable-gpu',
-                    '--remote-debugging-port=9222'
-                ],
-                executablePath: process.env.CHROME_PATH || undefined // Allow overriding chrome path
-            },
-            webVersionCache: {
-                type: 'remote',
-                remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+                    '--disable-gpu'
+                ]
             }
         });
 
         // QR Code event
         this.client.on('qr', (qr) => {
-            console.log('QR Code received');
+            console.log('✅ QR Code received from WhatsApp');
             this.qrCode = qr;
+            this.isInitializing = false; // QR arrived, no longer "starting up"
         });
 
         // Ready event
         this.client.on('ready', () => {
-            console.log('WhatsApp client is ready!');
+            console.log('✅ WhatsApp client is ready!');
             this.isReady = true;
+            this.isInitializing = false;
             this.qrCode = null;
         });
 
         // Authenticated event
         this.client.on('authenticated', () => {
             console.log('WhatsApp authenticated');
+            this.isInitializing = false;
         });
 
         // Auth failure event
         this.client.on('auth_failure', (msg) => {
             console.error('WhatsApp authentication failed:', msg);
+            this.initError = 'Authentication failed: ' + msg;
+            this.isInitializing = false;
+            this.client = null;
         });
 
         // Disconnected event
         this.client.on('disconnected', (reason) => {
             console.log('WhatsApp disconnected:', reason);
             this.isReady = false;
+            this.isInitializing = false;
             this.client = null;
         });
 
@@ -80,12 +114,12 @@ class WhatsAppService {
             await this.client.initialize();
             console.log('✅ WhatsApp client.initialize() completed');
         } catch (error) {
-            console.error('❌ Failed to initialize WhatsApp client:', error);
+            console.error('❌ Failed to initialize WhatsApp client:', error.message);
+            this.initError = error.message;
             this.client = null;
             this.isReady = false;
             this.qrCode = null;
-            this.isReady = false;
-            this.qrCode = null;
+            this.isInitializing = false;
         }
     }
 
@@ -98,12 +132,16 @@ class WhatsAppService {
             return { qr: this.qrCode };
         }
 
-        // Initialize if not already done
-        if (!this.client) {
-            this.initialize();
+        // If a previous attempt failed, report the error
+        if (this.initError && !this.client && !this.isInitializing) {
+            return { error: this.initError };
         }
 
-        // Return initializing status so frontend handles polling
+        // Start initializing only if not already doing so
+        if (!this.client && !this.isInitializing) {
+            this.initialize(); // intentionally not awaited — runs in background
+        }
+
         return { initializing: true };
     }
 
@@ -111,7 +149,9 @@ class WhatsAppService {
         return {
             connected: this.isReady,
             hasClient: !!this.client,
-            qrGenerated: !!this.qrCode
+            isInitializing: this.isInitializing,
+            qrGenerated: !!this.qrCode,
+            initError: this.initError || null
         };
     }
 
@@ -249,6 +289,8 @@ class WhatsAppService {
             }
             this.isReady = false;
             this.qrCode = null;
+            this.isInitializing = false;
+            this.initError = null;
 
             // Wait a bit for browser processes to fully exit before deleting files (critical on Windows)
             await new Promise(resolve => setTimeout(resolve, 2000));
