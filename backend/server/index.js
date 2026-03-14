@@ -1,8 +1,10 @@
 // Load environment variables FIRST
 require('dotenv').config();
 
+const http = require('http');
 const express = require('express');
 const cors = require('cors');
+const { Server: SocketIOServer } = require('socket.io');
 const path = require('path');
 const fs = require('fs').promises;
 const { google } = require('googleapis');
@@ -1159,6 +1161,17 @@ app.get('/api/whatsapp/messages/:chatId', async (req, res) => {
     }
 });
 
+// 23b. Mark WhatsApp chat as read
+app.post('/api/whatsapp/read/:chatId', async (req, res) => {
+    const chatId = decodeURIComponent(req.params.chatId);
+    try {
+        await whatsappService.markRead(chatId);
+        res.json({ success: true });
+    } catch (e) {
+        res.json({ success: false });
+    }
+});
+
 // 23. Disconnect WhatsApp
 app.post('/api/platforms/disconnect/Whatsapp', async (req, res) => {
     try {
@@ -1570,7 +1583,39 @@ app.post('/api/platforms/disconnect/:platform', async (req, res) => {
     }
 });
 
+// ── Socket.io Setup ──────────────────────────────────────────────────────────
+const httpServer = http.createServer(app);
+const io = new SocketIOServer(httpServer, {
+    cors: { origin: ['http://localhost:5173', 'http://localhost:3000'], methods: ['GET', 'POST'] }
+});
+
+io.on('connection', (socket) => {
+    console.log('🔌 Socket.io client connected:', socket.id);
+
+    // If WhatsApp is already connected when a new client joins, send current state immediately
+    const waStatus = whatsappService.getStatus();
+    waStatus.then(s => {
+        if (s.connected) {
+            socket.emit('wa:ready');
+            const chats = whatsappService._getFormattedChats();
+            if (chats.length > 0) socket.emit('wa:chats', chats);
+        } else if (s.qrGenerated) {
+            socket.emit('wa:qr', whatsappService.qrRaw);
+        }
+    }).catch(() => {});
+
+    socket.on('disconnect', () => console.log('🔌 Socket.io client disconnected:', socket.id));
+});
+
+// Forward WhatsApp events to all connected socket clients
+whatsappService.on('qr', (qr) => io.emit('wa:qr', qr));
+whatsappService.on('ready', () => io.emit('wa:ready'));
+whatsappService.on('disconnected', (reason) => io.emit('wa:disconnected', reason));
+whatsappService.on('message', (msg) => io.emit('wa:message', msg));
+whatsappService.on('chats', (chats) => io.emit('wa:chats', chats));
+
 // Start Server
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Socket.io ready on ws://localhost:${PORT}`);
 });

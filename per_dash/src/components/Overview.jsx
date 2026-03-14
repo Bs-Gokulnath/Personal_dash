@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import {
     AreaChart, Area, BarChart, Bar,
     XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
@@ -9,6 +9,8 @@ import {
 } from 'lucide-react';
 
 const Overview = ({ messages, connectedPlatforms, user, togglePlatform }) => {
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => { setMounted(true); }, []);
 
     const stats = useMemo(() => {
         const totalMessages = messages.length;
@@ -177,7 +179,7 @@ const Overview = ({ messages, connectedPlatforms, user, togglePlatform }) => {
                         </div>
                     </div>
                     <div style={{ width: '100%', height: 256 }}>
-                        <ResponsiveContainer width="100%" height="100%">
+                        {mounted && <ResponsiveContainer width="100%" height="100%">
                             <AreaChart data={stats.finalActivity}>
                                 <defs>
                                     <linearGradient id="gEmails" x1="0" y1="0" x2="0" y2="1">
@@ -201,7 +203,7 @@ const Overview = ({ messages, connectedPlatforms, user, togglePlatform }) => {
                                 <Area type="monotone" dataKey="whatsapp" name="WhatsApp" stroke="#22c55e" strokeWidth={2.5} fill="url(#gWA)" dot={false} activeDot={{ r: 5, fill: '#22c55e', stroke: '#dcfce7', strokeWidth: 2 }} />
                                 <Area type="monotone" dataKey="telegram" name="Telegram" stroke="#38bdf8" strokeWidth={2.5} fill="url(#gTG)" dot={false} activeDot={{ r: 5, fill: '#38bdf8', stroke: '#e0f2fe', strokeWidth: 2 }} />
                             </AreaChart>
-                        </ResponsiveContainer>
+                        </ResponsiveContainer>}
                     </div>
                 </div>
 
@@ -269,14 +271,14 @@ const Overview = ({ messages, connectedPlatforms, user, togglePlatform }) => {
                     <h3 className="text-gray-900 font-bold text-base mb-1">Peak Hours</h3>
                     <p className="text-gray-400 text-xs mb-5">Message volume by time</p>
                     <div style={{ width: '100%', height: 160 }}>
-                        <ResponsiveContainer width="100%" height="100%">
+                        {mounted && <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={stats.hourlyData} barSize={18}>
                                 <XAxis dataKey="h" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 10 }} />
                                 <YAxis hide />
                                 <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(99,102,241,0.04)' }} />
                                 <Bar dataKey="v" name="Messages" fill="#6366f1" radius={[4, 4, 0, 0]} />
                             </BarChart>
-                        </ResponsiveContainer>
+                        </ResponsiveContainer>}
                     </div>
                     <p className="text-xs text-gray-400 mt-3 text-center">Peak activity: <span className="text-indigo-600 font-semibold">2 PM – 4 PM</span></p>
                 </div>

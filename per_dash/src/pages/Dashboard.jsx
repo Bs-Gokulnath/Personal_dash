@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { io } from 'socket.io-client';
 import {
     Home,
     Inbox,
@@ -295,6 +296,68 @@ const Dashboard = () => {
     const [loadingWhatsAppMessages, setLoadingWhatsAppMessages] = useState(false);
     const [whatsappError, setWhatsappError] = useState(null);
     const messagesEndRef = useRef(null);
+    const waSocketRef = useRef(null);
+
+    // Socket.io — real-time WhatsApp messages
+    useEffect(() => {
+        const socket = io('http://localhost:5000', { transports: ['websocket', 'polling'] });
+        waSocketRef.current = socket;
+
+        socket.on('wa:ready', () => {
+            setWhatsappConnected(true);
+            setConnectedPlatforms(prev => ({ ...prev, Whatsapp: true }));
+            // Don't fetch here — wa:chats event will arrive shortly with actual data
+        });
+
+        socket.on('wa:disconnected', () => {
+            setWhatsappConnected(false);
+            setConnectedPlatforms(prev => ({ ...prev, Whatsapp: false }));
+            setMessages(prev => prev.filter(m => m.source !== 'Whatsapp'));
+        });
+
+        // Chats pushed from backend when Baileys loads them (after wa:ready)
+        socket.on('wa:chats', (chats) => {
+            const waMessages = chats.map(chat => ({
+                id: `whatsapp_${chat.id}`,
+                chatId: chat.id,
+                source: 'Whatsapp',
+                sender: chat.name,
+                preview: chat.lastMessage?.body || 'No messages yet',
+                time: chat.lastMessage?.timestamp
+                    ? new Date(chat.lastMessage.timestamp * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+                    : '',
+                subject: '',
+                body: chat.lastMessage?.body || '',
+                unreadCount: chat.unreadCount || 0,
+                isGroup: chat.isGroup,
+            }));
+            setWhatsappConversations(chats);
+            setMessages(prev => [...prev.filter(m => m.source !== 'Whatsapp'), ...waMessages]);
+            setWhatsappError(null);
+            setLoadingMessages(false);
+        });
+
+        socket.on('wa:message', (msg) => {
+            // Append to open chat view (only incoming messages — fromMe handled by optimistic UI)
+            setWhatsappMessages(prev => {
+                if (prev.some(m => m.id === msg.id)) return prev;
+                return [...prev, msg];
+            });
+            // Update chat list: preview text + bump unread only if this chat is not currently open
+            setMessages(prev => prev.map(chat => {
+                if (chat.chatId !== msg.chatId) return chat;
+                const isOpen = chat.chatId === (window.__openWAChat || null);
+                return {
+                    ...chat,
+                    preview: msg.body,
+                    time: new Date(msg.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    unreadCount: isOpen ? 0 : (chat.unreadCount || 0) + 1,
+                };
+            }));
+        });
+
+        return () => { socket.disconnect(); waSocketRef.current = null; };
+    }, []);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -310,6 +373,10 @@ const Dashboard = () => {
 
     // AI Chat State
     const [isAIChatOpen, setIsAIChatOpen] = useState(false);
+    const [isWAAIOpen, setIsWAAIOpen] = useState(false);
+    const [waAIPrompt, setWAAIPrompt] = useState('');
+    const [waAISuggestion, setWAAISuggestion] = useState('');
+    const [isWAAIThinking, setIsWAAIThinking] = useState(false);
     const [aiChatMessages, setAIChatMessages] = useState([
         { 
             role: 'assistant', 
@@ -736,6 +803,7 @@ const Dashboard = () => {
             const response = await fetch('http://localhost:5000/api/whatsapp/status');
             const data = await response.json();
             setWhatsappConnected(data.connected);
+            // If already connected on page load, fetch chats once via REST
             if (data.connected) {
                 fetchWhatsAppConversations();
             }
@@ -798,6 +866,30 @@ const Dashboard = () => {
         alert(`WhatsApp connected successfully!\nPhone: ${connectionResult.phoneNumber}`);
     };
 
+    const sendWAMessage = async () => {
+        if (!replyText.trim() || !selectedMessage) return;
+        const messageText = replyText;
+        const optimisticMessage = { body: messageText, fromMe: true, timestamp: Math.floor(Date.now() / 1000) };
+        setWhatsappMessages(prev => [...prev, optimisticMessage]);
+        setReplyText('');
+        try {
+            const response = await fetch('http://localhost:5000/api/whatsapp/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-user-id': user?.uid || 'anonymous' },
+                body: JSON.stringify({ chatId: selectedMessage.chatId, message: messageText })
+            });
+            if (response.ok) {
+                fetchWhatsAppConversations();
+            } else {
+                alert('Failed to send message');
+                setWhatsappMessages(prev => prev.filter(m => m !== optimisticMessage));
+            }
+        } catch (error) {
+            alert('Failed to send message');
+            setWhatsappMessages(prev => prev.filter(m => m !== optimisticMessage));
+        }
+    };
+
     const handleSendWhatsAppMessage = async (phoneNumber, message) => {
         try {
             const response = await fetch('http://localhost:5000/api/whatsapp/send', {
@@ -855,11 +947,7 @@ const Dashboard = () => {
         }
     }, [telegramConnected, activePage]);
 
-    useEffect(() => {
-        if (whatsappConnected && (activePage === 'Whatsapp' || activePage === 'Dashboard')) {
-            fetchWhatsAppConversations();
-        }
-    }, [whatsappConnected, activePage]);
+    // WhatsApp chats are now pushed via socket (wa:chats event) — no polling needed
 
     const handleSignOut = async () => {
         try {
@@ -1190,7 +1278,16 @@ const Dashboard = () => {
                                                             setSelectedMessage(chat);
                                                             setLoadingWhatsAppMessages(true);
 
+                                                            // Track open chat so incoming messages don't bump unread count
                                                             const targetId = chat.chatId || chat.id;
+                                                            window.__openWAChat = targetId;
+
+                                                            // Clear unread badge immediately in UI
+                                                            setMessages(prev => prev.map(m =>
+                                                                m.chatId === targetId ? { ...m, unreadCount: 0 } : m
+                                                            ));
+                                                            // Tell backend to mark as read
+                                                            fetch(`http://localhost:5000/api/whatsapp/read/${encodeURIComponent(targetId)}`, { method: 'POST' }).catch(() => {});
                                                             console.log('Target Chat ID for API:', targetId);
 
                                                             // Fetch full chat history
@@ -1348,17 +1445,102 @@ const Dashboard = () => {
                                                 </div>
                                             </div>
 
+                                            {/* Crivo AI Panel */}
+                                            {isWAAIOpen && (
+                                                <div className="bg-white border-t border-gray-200 px-3 pt-3 pb-2">
+                                                    <div className="flex items-center gap-2 mb-2">
+                                                        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold text-white" style={{ background: 'linear-gradient(135deg,#6366f1,#8b5cf6)' }}>
+                                                            <Sparkles size={11} />
+                                                            Crivo AI
+                                                        </div>
+                                                        <span className="text-xs text-gray-400 flex-1">Ask AI to draft a reply based on this conversation</span>
+                                                        <button onClick={() => { setIsWAAIOpen(false); setWAAISuggestion(''); setWAAIPrompt(''); }} className="text-gray-400 hover:text-gray-600">
+                                                            <X size={14} />
+                                                        </button>
+                                                    </div>
+
+                                                    {/* AI Suggestion */}
+                                                    {waAISuggestion && (
+                                                        <div className="mb-2 p-2.5 rounded-xl text-sm text-gray-800 border border-purple-100" style={{ background: '#f8f7ff' }}>
+                                                            <p className="leading-snug">{waAISuggestion}</p>
+                                                            <div className="flex gap-2 mt-2">
+                                                                <button
+                                                                    onClick={() => { setReplyText(waAISuggestion); setWAAISuggestion(''); setIsWAAIOpen(false); }}
+                                                                    className="px-3 py-1 text-xs font-semibold text-white rounded-lg"
+                                                                    style={{ background: 'linear-gradient(135deg,#6366f1,#8b5cf6)' }}
+                                                                >
+                                                                    Use this reply
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => setWAAISuggestion('')}
+                                                                    className="px-3 py-1 text-xs font-medium text-gray-500 bg-gray-100 rounded-lg hover:bg-gray-200"
+                                                                >
+                                                                    Discard
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* AI Prompt Input */}
+                                                    <div className="flex items-center gap-2 bg-gray-50 rounded-xl px-3 py-2 border border-gray-200">
+                                                        <input
+                                                            type="text"
+                                                            value={waAIPrompt}
+                                                            onChange={e => setWAAIPrompt(e.target.value)}
+                                                            onKeyPress={async e => { if (e.key === 'Enter') e.target.nextSibling?.click(); }}
+                                                            placeholder="e.g. Reply professionally, say I'll call back tomorrow..."
+                                                            className="flex-1 bg-transparent text-sm text-gray-700 placeholder-gray-400 focus:outline-none"
+                                                            autoFocus
+                                                        />
+                                                        <button
+                                                            disabled={isWAAIThinking}
+                                                            onClick={async () => {
+                                                                setIsWAAIThinking(true);
+                                                                setWAAISuggestion('');
+                                                                try {
+                                                                    // Build context from last 6 messages
+                                                                    const ctx = whatsappMessages.slice(-6).map(m =>
+                                                                        `${m.fromMe ? 'Me' : (selectedMessage?.sender || 'Them')}: ${m.body}`
+                                                                    ).join('\n');
+                                                                    const prompt = waAIPrompt.trim()
+                                                                        ? `Conversation:\n${ctx}\n\nTask: ${waAIPrompt}\nWrite only the reply message, no extra text.`
+                                                                        : `Conversation:\n${ctx}\n\nWrite a short, natural reply to the last message. Reply only with the message text.`;
+                                                                    const res = await fetch('http://localhost:5000/api/ai/chat', {
+                                                                        method: 'POST',
+                                                                        headers: { 'Content-Type': 'application/json', 'x-user-email': user?.email || 'user@example.com' },
+                                                                        body: JSON.stringify({ messages: [{ role: 'user', content: prompt }] })
+                                                                    });
+                                                                    const data = await res.json();
+                                                                    setWAAISuggestion(data.response || data.message || 'Could not generate a reply.');
+                                                                } catch {
+                                                                    setWAAISuggestion('Failed to get AI response. Please try again.');
+                                                                } finally {
+                                                                    setIsWAAIThinking(false);
+                                                                }
+                                                            }}
+                                                            className="w-7 h-7 flex items-center justify-center rounded-lg text-white flex-shrink-0 disabled:opacity-50 transition-all"
+                                                            style={{ background: 'linear-gradient(135deg,#6366f1,#8b5cf6)' }}
+                                                        >
+                                                            {isWAAIThinking
+                                                                ? <Loader2 size={13} className="animate-spin" />
+                                                                : <Sparkles size={13} />
+                                                            }
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            )}
+
                                             {/* Message Input */}
                                             <div className="bg-[#f0f2f5] p-3 flex items-center gap-2">
-                                                <button className="p-2 text-gray-600 hover:bg-gray-200 rounded-full">
-                                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                                                        <path d="M9.153 11.603c.795 0 1.439-.879 1.439-1.962s-.644-1.962-1.439-1.962-1.439.879-1.439 1.962.644 1.962 1.439 1.962zm-3.204 1.362c-.026-.307-.131 5.218 6.063 5.551 6.066-.25 6.066-5.551 6.066-5.551-6.078 1.416-12.129 0-12.129 0zm11.363 1.108s-.669 1.959-5.051 1.959c-3.505 0-5.388-1.164-5.607-1.959 0 0 5.912 1.055 10.658 0zM11.804 1.011C5.609 1.011.978 6.033.978 12.228s4.826 10.761 11.021 10.761S23.02 18.423 23.02 12.228c.001-6.195-5.021-11.217-11.216-11.217zM12 21.354c-5.273 0-9.381-3.886-9.381-9.159s3.942-9.548 9.215-9.548 9.548 4.275 9.548 9.548c-.001 5.272-4.109 9.159-9.382 9.159zm3.108-9.751c.795 0 1.439-.879 1.439-1.962s-.644-1.962-1.439-1.962-1.439.879-1.439 1.962.644 1.962 1.439 1.962z" />
-                                                    </svg>
-                                                </button>
-                                                <button className="p-2 text-gray-600 hover:bg-gray-200 rounded-full">
-                                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                                                        <path d="M1.816 15.556v.002c0 1.502.584 2.912 1.646 3.972s2.472 1.647 3.974 1.647a5.58 5.58 0 003.972-1.645l9.547-9.548c.769-.768 1.147-1.767 1.058-2.817-.079-.968-.548-1.927-1.319-2.698-1.594-1.592-4.068-1.711-5.517-.262l-7.916 7.915c-.881.881-.792 2.25.214 3.261.959.958 2.423 1.053 3.263.215l5.511-5.512c.28-.28.267-.722.053-.936l-.244-.244c-.191-.191-.567-.349-.957.04l-5.506 5.506c-.18.18-.635.127-.976-.214-.098-.097-.576-.613-.213-.973l7.915-7.917c.818-.817 2.267-.699 3.23.262.5.501.802 1.1.849 1.685.051.573-.156 1.111-.589 1.543l-9.547 9.549a3.97 3.97 0 01-2.829 1.171 3.975 3.975 0 01-2.83-1.173 3.973 3.973 0 01-1.172-2.828c0-1.071.415-2.076 1.172-2.83l7.209-7.211c.157-.157.264-.579.028-.814L11.5 4.36a.572.572 0 00-.834.018l-7.205 7.207a5.577 5.577 0 00-1.645 3.971z" />
-                                                    </svg>
+                                                {/* Crivo AI Toggle */}
+                                                <button
+                                                    onClick={() => { setIsWAAIOpen(v => !v); setWAAISuggestion(''); setWAAIPrompt(''); }}
+                                                    title="Crivo AI"
+                                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-semibold transition-all flex-shrink-0 ${isWAAIOpen ? 'text-white' : 'text-purple-600 bg-purple-50 hover:bg-purple-100'}`}
+                                                    style={isWAAIOpen ? { background: 'linear-gradient(135deg,#6366f1,#8b5cf6)' } : {}}
+                                                >
+                                                    <Sparkles size={13} />
+                                                    <span className="hidden sm:inline">AI</span>
                                                 </button>
                                                 <input
                                                     type="text"
@@ -1368,54 +1550,13 @@ const Dashboard = () => {
                                                     onKeyPress={(e) => {
                                                         if (e.key === 'Enter' && replyText.trim() && selectedMessage) {
                                                             e.preventDefault();
-                                                            document.querySelector('button[class*="bg-[#008069]"]').click();
+                                                            sendWAMessage();
                                                         }
                                                     }}
                                                     className="flex-1 px-4 py-2 rounded-lg bg-white focus:outline-none"
                                                 />
                                                 <button
-                                                    onClick={async () => {
-                                                        if (replyText.trim() && selectedMessage) {
-                                                            const messageText = replyText;
-
-                                                            // Optimistic update - add message immediately to UI
-                                                            const optimisticMessage = {
-                                                                body: messageText,
-                                                                fromMe: true,
-                                                                timestamp: Math.floor(Date.now() / 1000)
-                                                            };
-                                                            setWhatsappMessages(prev => [...prev, optimisticMessage]);
-                                                            setReplyText('');
-
-                                                            try {
-                                                                const response = await fetch('http://localhost:5000/api/whatsapp/send', {
-                                                                    method: 'POST',
-                                                                    headers: {
-                                                                        'Content-Type': 'application/json',
-                                                                        'x-user-id': user?.uid || 'anonymous'
-                                                                    },
-                                                                    body: JSON.stringify({
-                                                                        chatId: selectedMessage.chatId,
-                                                                        message: messageText
-                                                                    })
-                                                                });
-
-                                                                if (response.ok) {
-                                                                    // Optionally refresh chats to show new message
-                                                                    fetchWhatsAppConversations();
-                                                                } else {
-                                                                    alert('Failed to send message');
-                                                                    // Remove optimistic message on failure
-                                                                    setWhatsappMessages(prev => prev.filter(m => m !== optimisticMessage));
-                                                                }
-                                                            } catch (error) {
-                                                                console.error('Error sending WhatsApp message:', error);
-                                                                alert('Failed to send message');
-                                                                // Remove optimistic message on error
-                                                                setWhatsappMessages(prev => prev.filter(m => m !== optimisticMessage));
-                                                            }
-                                                        }
-                                                    }}
+                                                    onClick={sendWAMessage}
                                                     className="p-2 bg-[#008069] text-white rounded-full hover:bg-[#017561] transition-colors"
                                                 >
                                                     <Send size={20} />
@@ -1998,10 +2139,10 @@ const Dashboard = () => {
                 )
             }
 
-            {/* AI Chat FAB */}
+            {/* AI Chat FAB — hidden on WhatsApp/Telegram pages to avoid overlapping the chat input */}
             <button
                 onClick={() => setIsAIChatOpen(!isAIChatOpen)}
-                className="fixed bottom-6 right-6 z-50 group flex items-center gap-2.5 transition-all hover:scale-105"
+                className={`fixed bottom-6 right-6 z-50 group flex items-center gap-2.5 transition-all hover:scale-105 ${activePage === 'Whatsapp' || activePage === 'Telegram' ? 'hidden' : ''}`}
                 style={{
                     background: isAIChatOpen ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%)',
                     borderRadius: isAIChatOpen ? '50%' : '50px',
@@ -2093,7 +2234,7 @@ const Dashboard = () => {
 
 
             {/* AI Chat Window */}
-            {isAIChatOpen && (
+            {isAIChatOpen && activePage !== 'Whatsapp' && activePage !== 'Telegram' && (
                 <div className="fixed bottom-24 right-6 w-[380px] flex flex-col z-50" style={{ height: 520 }}>
                     {/* Glass card container */}
                     <div className="flex flex-col h-full rounded-2xl overflow-hidden shadow-2xl border border-white/60" style={{ background: 'rgba(255,255,255,0.92)', backdropFilter: 'blur(20px)' }}>
