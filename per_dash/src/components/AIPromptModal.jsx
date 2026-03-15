@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, Wand2, Loader2 } from 'lucide-react';
 
-const AIPromptModal = ({ isOpen, onClose, onGenerate, emailContext = null }) => {
+const AIPromptModal = ({ isOpen, onClose, onGenerate, emailContext = null, onNotify }) => {
     const [prompt, setPrompt] = useState('');
     const [tone, setTone] = useState('professional');
     const [isGenerating, setIsGenerating] = useState(false);
@@ -10,7 +10,9 @@ const AIPromptModal = ({ isOpen, onClose, onGenerate, emailContext = null }) => 
 
     const handleGenerate = async () => {
         if (!prompt.trim()) {
-            alert('Please enter a prompt');
+            if (onNotify) {
+                onNotify('Please enter a prompt', 'warning');
+            }
             return;
         }
 
@@ -21,7 +23,9 @@ const AIPromptModal = ({ isOpen, onClose, onGenerate, emailContext = null }) => 
             onClose();
         } catch (error) {
             console.error('Error generating draft:', error);
-            alert('Failed to generate draft. Please try again.');
+            if (onNotify) {
+                onNotify('Failed to generate draft. Please try again.', 'error');
+            }
         } finally {
             setIsGenerating(false);
         }

@@ -58,8 +58,14 @@ const Signin = () => {
 
                 {/* Right Side - Form */}
                 <div className="flex w-full flex-col justify-center p-8 md:w-1/2 md:p-12">
+                    <div className="mb-6 border-b border-gray-100 pb-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-600">Crivo Inai</p>
+                        <p className="mt-1 text-sm text-gray-500">Smart Communication Dashboard</p>
+                    </div>
+
                     <div className="mb-8 text-left">
                         <h2 className="text-4xl font-bold text-gray-800">Log in</h2>
+                        <p className="mt-2 text-sm text-gray-500">Access your unified inbox and AI assistant.</p>
                     </div>
 
                     {error && <div className="mb-4 text-sm text-red-500">{error}</div>}

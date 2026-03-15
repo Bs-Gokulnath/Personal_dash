@@ -151,6 +151,51 @@ const Dashboard = () => {
         Whatsapp: false,
         Telegram: false
     });
+    const [toasts, setToasts] = useState([]);
+    const [confirmDialog, setConfirmDialog] = useState({
+        open: false,
+        title: '',
+        message: '',
+        confirmText: 'Confirm',
+        tone: 'danger'
+    });
+    const [summaryModal, setSummaryModal] = useState({
+        open: false,
+        title: '',
+        summary: '',
+        keyPoints: []
+    });
+    const confirmResolverRef = useRef(null);
+
+    const showToast = useCallback((message, type = 'info') => {
+        const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        setToasts((prev) => [...prev, { id, message, type }]);
+
+        setTimeout(() => {
+            setToasts((prev) => prev.filter((toast) => toast.id !== id));
+        }, 3200);
+    }, []);
+
+    const requestConfirmation = useCallback(({ title, message, confirmText = 'Confirm', tone = 'danger' }) => {
+        return new Promise((resolve) => {
+            confirmResolverRef.current = resolve;
+            setConfirmDialog({
+                open: true,
+                title,
+                message,
+                confirmText,
+                tone
+            });
+        });
+    }, []);
+
+    const closeConfirmation = (result) => {
+        setConfirmDialog((prev) => ({ ...prev, open: false }));
+        if (confirmResolverRef.current) {
+            confirmResolverRef.current(result);
+            confirmResolverRef.current = null;
+        }
+    };
 
     const fetchPlatformStatus = async () => {
         try {
@@ -173,22 +218,30 @@ const Dashboard = () => {
 
         if (isConnected) {
             // Handle Disconnection
-            if (window.confirm(`Are you sure you want to disconnect ${platformId}?`)) {
-                try {
-                    const response = await fetch(`http://localhost:5000/api/platforms/disconnect/${platformId}`, {
-                        method: 'POST',
-                        headers: { 'x-user-id': user?.uid || 'anonymous' }
-                    });
+            const confirmed = await requestConfirmation({
+                title: `Disconnect ${platformId}?`,
+                message: `Your ${platformId} sync will be paused until you connect it again.`,
+                confirmText: 'Disconnect',
+                tone: 'danger'
+            });
 
-                    if (response.ok) {
-                        setConnectedPlatforms(prev => ({ ...prev, [platformId]: false }));
-                    } else {
-                        alert('Failed to disconnect. Please try again.');
-                    }
-                } catch (error) {
-                    console.error("Error disconnecting:", error);
-                    alert('Error disconnecting platform.');
+            if (!confirmed) return;
+
+            try {
+                const response = await fetch(`http://localhost:5000/api/platforms/disconnect/${platformId}`, {
+                    method: 'POST',
+                    headers: { 'x-user-id': user?.uid || 'anonymous' }
+                });
+
+                if (response.ok) {
+                    setConnectedPlatforms(prev => ({ ...prev, [platformId]: false }));
+                    showToast(`${platformId} disconnected successfully.`, 'success');
+                } else {
+                    showToast('Failed to disconnect. Please try again.', 'error');
                 }
+            } catch (error) {
+                console.error("Error disconnecting:", error);
+                showToast('Error disconnecting platform.', 'error');
             }
         } else {
             // Handle Connection
@@ -489,7 +542,7 @@ const Dashboard = () => {
 
     const sendEmail = async () => {
         if (!composeData.to || !composeData.subject) {
-            alert('Please fill in recipient and subject fields');
+            showToast('Please fill in recipient and subject fields.', 'warning');
             return;
         }
 
@@ -505,13 +558,13 @@ const Dashboard = () => {
                 throw new Error('Failed to send email');
             }
 
-            alert('Email sent successfully!');
+            showToast('Email sent successfully!', 'success');
             setIsComposeOpen(false);
             setComposeData({ to: '', subject: '', body: '' });
             fetchEmails(); // Refresh inbox
         } catch (err) {
             console.error("Error sending email:", err);
-            alert("Failed to send email. Please try again.");
+            showToast('Failed to send email. Please try again.', 'error');
         } finally {
             setSendingEmail(false);
         }
@@ -573,7 +626,7 @@ const Dashboard = () => {
             setIsAIPromptOpen(false);
         } catch (error) {
             console.error('Error generating draft:', error);
-            alert('Failed to generate draft. Please try again.');
+            showToast('Failed to generate draft. Please try again.', 'error');
         }
     };
 
@@ -606,7 +659,7 @@ const Dashboard = () => {
                 throw new Error('Failed to send email');
             }
 
-            alert('Email sent successfully!');
+            showToast('Email sent successfully!', 'success');
             setShowDraftPreview(false);
             setGeneratedDraft(null);
             fetchEmails(); // Refresh inbox
@@ -632,10 +685,15 @@ const Dashboard = () => {
             }
 
             const data = await response.json();
-            alert(`Summary:\n${data.summary}\n\nKey Points:\n${data.keyPoints.join('\n')}`);
+            setSummaryModal({
+                open: true,
+                title: email.subject || 'Email Summary',
+                summary: data.summary,
+                keyPoints: data.keyPoints || []
+            });
         } catch (error) {
             console.error('Error summarizing email:', error);
-            alert('Failed to summarize email. Please try again.');
+            showToast('Failed to summarize email. Please try again.', 'error');
         }
     };
 
@@ -714,11 +772,11 @@ const Dashboard = () => {
 
             setReplyText('');
             setSelectedTelegramChat(null);
-            alert('Reply sent!');
+            showToast('Reply sent!', 'success');
             fetchTelegramChats(); // Refresh to show new message
         } catch (error) {
             console.error('Error sending Telegram reply:', error);
-            alert('Failed to send reply');
+            showToast('Failed to send reply.', 'error');
         }
     };
 
@@ -863,7 +921,7 @@ const Dashboard = () => {
         setWhatsappConnected(true);
         fetchWhatsAppConversations();
         fetchPlatformStatus(); // Update connectors status
-        alert(`WhatsApp connected successfully!\nPhone: ${connectionResult.phoneNumber}`);
+        showToast(`WhatsApp connected successfully (${connectionResult.phoneNumber}).`, 'success');
     };
 
     const sendWAMessage = async () => {
@@ -881,11 +939,11 @@ const Dashboard = () => {
             if (response.ok) {
                 fetchWhatsAppConversations();
             } else {
-                alert('Failed to send message');
+                showToast('Failed to send message.', 'error');
                 setWhatsappMessages(prev => prev.filter(m => m !== optimisticMessage));
             }
         } catch (error) {
-            alert('Failed to send message');
+            showToast('Failed to send message.', 'error');
             setWhatsappMessages(prev => prev.filter(m => m !== optimisticMessage));
         }
     };
@@ -2100,6 +2158,7 @@ const Dashboard = () => {
                 }}
                 onGenerate={handleGenerateDraft}
                 emailContext={aiContext}
+                onNotify={showToast}
             />
 
             {/* Draft Preview Modal */}
@@ -2113,9 +2172,84 @@ const Dashboard = () => {
                         }}
                         onSend={handleSendAIDraft}
                         onImprove={handleImproveDraft}
+                        onNotify={showToast}
                     />
                 )
             }
+
+            {confirmDialog.open && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={() => closeConfirmation(false)}>
+                    <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                        <h3 className="text-lg font-bold text-gray-900">{confirmDialog.title}</h3>
+                        <p className="mt-2 text-sm text-gray-600">{confirmDialog.message}</p>
+                        <div className="mt-6 flex justify-end gap-3">
+                            <button
+                                onClick={() => closeConfirmation(false)}
+                                className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => closeConfirmation(true)}
+                                className={`rounded-lg px-4 py-2 text-sm font-medium text-white ${confirmDialog.tone === 'danger' ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+                            >
+                                {confirmDialog.confirmText}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {summaryModal.open && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={() => setSummaryModal({ open: false, title: '', summary: '', keyPoints: [] })}>
+                    <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                        <h3 className="text-lg font-bold text-gray-900">AI Summary</h3>
+                        <p className="mt-1 text-sm text-gray-500 truncate">{summaryModal.title}</p>
+                        <div className="mt-4 rounded-lg bg-indigo-50 p-4">
+                            <p className="text-sm text-indigo-900">{summaryModal.summary}</p>
+                        </div>
+                        {summaryModal.keyPoints.length > 0 && (
+                            <div className="mt-4">
+                                <h4 className="text-sm font-semibold text-gray-800">Key Points</h4>
+                                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-gray-600">
+                                    {summaryModal.keyPoints.map((point, index) => (
+                                        <li key={`${point}-${index}`}>{point}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                        <div className="mt-6 flex justify-end">
+                            <button
+                                onClick={() => setSummaryModal({ open: false, title: '', summary: '', keyPoints: [] })}
+                                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {toasts.length > 0 && (
+                <div className="fixed top-6 right-6 z-[70] flex w-full max-w-sm flex-col gap-3">
+                    {toasts.map((toast) => (
+                        <div
+                            key={toast.id}
+                            className={`rounded-xl border px-4 py-3 text-sm shadow-lg backdrop-blur ${toast.type === 'success'
+                                ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                                : toast.type === 'error'
+                                    ? 'border-red-200 bg-red-50 text-red-800'
+                                    : toast.type === 'warning'
+                                        ? 'border-amber-200 bg-amber-50 text-amber-800'
+                                        : 'border-blue-200 bg-blue-50 text-blue-800'
+                                }`}
+                        >
+                            {toast.message}
+                        </div>
+                    ))}
+                </div>
+            )}
+
             {/* Telegram Auth Modal */}
             <TelegramAuthModal
                 isOpen={isTelegramAuthOpen}

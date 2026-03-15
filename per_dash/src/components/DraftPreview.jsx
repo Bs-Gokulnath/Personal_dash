@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, Send, Loader2, RefreshCw, Edit3 } from 'lucide-react';
 
-const DraftPreview = ({ draft, onClose, onSend, onImprove }) => {
+const DraftPreview = ({ draft, onClose, onSend, onImprove, onNotify }) => {
     const [editedDraft, setEditedDraft] = useState(draft);
     const [isSending, setIsSending] = useState(false);
     const [showImprove, setShowImprove] = useState(false);
@@ -15,7 +15,9 @@ const DraftPreview = ({ draft, onClose, onSend, onImprove }) => {
             onClose();
         } catch (error) {
             console.error('Error sending email:', error);
-            alert('Failed to send email. Please try again.');
+            if (onNotify) {
+                onNotify('Failed to send email. Please try again.', 'error');
+            }
         } finally {
             setIsSending(false);
         }
@@ -23,7 +25,9 @@ const DraftPreview = ({ draft, onClose, onSend, onImprove }) => {
 
     const handleImprove = async () => {
         if (!improveInstruction.trim()) {
-            alert('Please enter improvement instructions');
+            if (onNotify) {
+                onNotify('Please enter improvement instructions', 'warning');
+            }
             return;
         }
 
@@ -38,7 +42,9 @@ const DraftPreview = ({ draft, onClose, onSend, onImprove }) => {
             setShowImprove(false);
         } catch (error) {
             console.error('Error improving draft:', error);
-            alert('Failed to improve draft. Please try again.');
+            if (onNotify) {
+                onNotify('Failed to improve draft. Please try again.', 'error');
+            }
         } finally {
             setIsImproving(false);
         }
