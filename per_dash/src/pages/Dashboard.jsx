@@ -438,6 +438,9 @@ const Dashboard = () => {
     ]);
     const [aiChatInput, setAIChatInput] = useState('');
     const [isAiThinking, setIsAiThinking] = useState(false);
+    const aiChatInputRef = useRef(null);
+    const aiChatMessagesRef = useRef(null);
+    const aiChatEndRef = useRef(null);
 
     const navigate = useNavigate();
     const location = useLocation();
@@ -703,6 +706,9 @@ const Dashboard = () => {
         const userMessage = { role: 'user', content: aiChatInput };
         setAIChatMessages(prev => [...prev, userMessage]);
         setAIChatInput('');
+        if (aiChatInputRef.current) {
+            aiChatInputRef.current.style.height = '24px';
+        }
         setIsAiThinking(true);
 
         try {
@@ -752,6 +758,25 @@ const Dashboard = () => {
             setIsAiThinking(false);
         }
     };
+
+    const handleAIChatInputChange = (e) => {
+        setAIChatInput(e.target.value);
+        e.target.style.height = 'auto';
+        e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+    };
+
+    const handleAIChatInputKeyDown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleSendAIChat();
+        }
+    };
+
+    useEffect(() => {
+        if (!isAIChatOpen) return;
+
+        aiChatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }, [aiChatMessages, isAiThinking, isAIChatOpen]);
 
     const handleSendTelegramReply = async () => {
         if (!replyText.trim() || !selectedTelegramChat) return;
@@ -2400,7 +2425,7 @@ const Dashboard = () => {
                         </div>
 
                         {/* Messages */}
-                        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3" style={{ background: 'linear-gradient(180deg, #f8f7ff 0%, #fafafa 100%)' }}>
+                        <div ref={aiChatMessagesRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3" style={{ background: 'linear-gradient(180deg, #f8f7ff 0%, #fafafa 100%)' }}>
                             {aiChatMessages.map((msg, idx) => (
                                 <div key={idx} className={`flex items-end gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                                     {msg.role === 'assistant' && (
@@ -2449,6 +2474,7 @@ const Dashboard = () => {
                                     </div>
                                 </div>
                             )}
+                            <div ref={aiChatEndRef} />
                         </div>
 
                         {/* Quick suggestions (only show when there's just the initial message) */}
@@ -2470,13 +2496,14 @@ const Dashboard = () => {
                         {/* Input area */}
                         <div className="px-3 pb-3 pt-2 bg-white border-t" style={{ borderColor: '#f0eeff' }}>
                             <div className="flex items-center gap-2 px-3 py-2 rounded-xl border" style={{ background: '#f8f7ff', borderColor: '#e8e4ff' }}>
-                                <input
-                                    type="text"
+                                <textarea
+                                    ref={aiChatInputRef}
                                     value={aiChatInput}
-                                    onChange={(e) => setAIChatInput(e.target.value)}
-                                    onKeyPress={(e) => e.key === 'Enter' && handleSendAIChat()}
+                                    onChange={handleAIChatInputChange}
+                                    onKeyDown={handleAIChatInputKeyDown}
                                     placeholder="Ask Crivo AI anything..."
-                                    className="flex-1 bg-transparent text-sm text-gray-700 placeholder-gray-400 focus:outline-none"
+                                    rows={1}
+                                    className="max-h-[120px] flex-1 resize-none overflow-y-auto bg-transparent text-sm text-gray-700 placeholder-gray-400 focus:outline-none"
                                 />
                                 <button
                                     onClick={handleSendAIChat}
